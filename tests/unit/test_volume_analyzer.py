@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from prediction_market.analysis.volume_analyzer import VolumeAnalyzer
 from prediction_market.config import ThresholdConfig

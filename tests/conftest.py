@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 from prediction_market.config import AppConfig, load_config
 from prediction_market.data.polymarket.models import GammaMarket, OrderBook, OrderBookEntry

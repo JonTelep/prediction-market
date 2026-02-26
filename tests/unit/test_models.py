@@ -5,7 +5,6 @@ import pytest
 from prediction_market.data.polymarket.models import (
     GammaMarket,
     OrderBook,
-    OrderBookEntry,
     Trade,
 )
 

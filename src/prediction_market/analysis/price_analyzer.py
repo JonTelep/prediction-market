@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from prediction_market.analysis.timeseries import EWMA, RollingStats, compute_z_score
+from prediction_market.analysis.timeseries import EWMA, RollingStats
 from prediction_market.config import ThresholdConfig
 
 logger = logging.getLogger(__name__)

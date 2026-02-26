@@ -5,7 +5,7 @@ import json
 import pytest
 import pytest_asyncio
 
-from prediction_market.config import AppConfig, load_config
+from prediction_market.config import load_config
 from prediction_market.store.database import init_database
 
 

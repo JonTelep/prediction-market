@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any
 
 from prediction_market.config import ThresholdConfig
 from prediction_market.data.polymarket.models import MarketHolder, OrderBook

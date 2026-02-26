@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+data/
+.pytest_cache
+.ruff_cache
+*.db
+*.db-wal
+*.db-shm
+*.egg-info
+.claude

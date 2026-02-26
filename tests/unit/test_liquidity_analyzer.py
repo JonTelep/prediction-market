@@ -3,7 +3,7 @@
 import pytest
 
 from prediction_market.analysis.liquidity_analyzer import LiquidityAnalyzer, LiquidityMetrics
-from prediction_market.data.polymarket.models import MarketHolder, OrderBook, OrderBookEntry
+from prediction_market.data.polymarket.models import MarketHolder
 
 
 class TestLiquidityAnalyzer:
