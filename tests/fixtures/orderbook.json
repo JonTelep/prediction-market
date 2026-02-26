@@ -1,0 +1,22 @@
+{
+  "market": "fixture-market-1",
+  "asset_id": "token-yes-1",
+  "bids": [
+    {"price": "0.64", "size": "1000"},
+    {"price": "0.63", "size": "2000"},
+    {"price": "0.62", "size": "3000"},
+    {"price": "0.60", "size": "5000"},
+    {"price": "0.55", "size": "3000"},
+    {"price": "0.50", "size": "4000"}
+  ],
+  "asks": [
+    {"price": "0.66", "size": "800"},
+    {"price": "0.67", "size": "1500"},
+    {"price": "0.68", "size": "2000"},
+    {"price": "0.70", "size": "3000"},
+    {"price": "0.75", "size": "2000"},
+    {"price": "0.80", "size": "5000"}
+  ],
+  "hash": "0xhash123",
+  "timestamp": "1706140800"
+}

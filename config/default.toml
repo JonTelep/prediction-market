@@ -1,0 +1,54 @@
+[database]
+path = "data/prediction_market.db"
+
+[polling]
+snapshot_interval_seconds = 60
+orderbook_interval_seconds = 300
+market_discovery_interval_seconds = 3600
+event_refresh_interval_seconds = 7200
+
+[thresholds]
+# Agent 1: Info-Leak Detector
+price_zscore = 2.5
+volume_zscore = 3.0
+combined_score_min = 4.0
+event_proximity_hours = 24
+event_amplifier = 1.5
+news_dampener = 0.3
+rolling_window_days = 7
+
+# Agent 2: Manipulation Guard
+susceptibility_threshold = 0.7
+liquidity_drop_pct = 0.50
+depth_weight = 0.30
+spread_weight = 0.25
+concentration_weight = 0.25
+imbalance_weight = 0.20
+
+[rate_limits]
+gamma_requests_per_window = 4000
+gamma_window_seconds = 10
+clob_requests_per_window = 9000
+clob_window_seconds = 10
+data_requests_per_window = 1000
+data_window_seconds = 10
+
+[reporting]
+output_dir = "data/reports"
+formats = ["json", "markdown"]
+# webhook_url = ""
+
+[websocket]
+clob_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+rtds_url = "wss://ws-live-data.polymarket.com/ws"
+reconnect_delay_seconds = 5
+max_reconnect_attempts = 10
+
+[apis]
+gamma_base_url = "https://gamma-api.polymarket.com"
+clob_base_url = "https://clob.polymarket.com"
+data_base_url = "https://data-api.polymarket.com"
+congress_base_url = "https://api.congress.gov/v3"
+courtlistener_base_url = "https://www.courtlistener.com/api/rest/v4"
+gdelt_base_url = "https://api.gdeltproject.org/api/v2"
+newsapi_base_url = "https://newsapi.org/v2"

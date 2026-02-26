@@ -1,0 +1,79 @@
+[classification]
+# Tags from Polymarket that indicate political markets
+political_tags = [
+    "Politics",
+    "Elections",
+    "Congress",
+    "Senate",
+    "Supreme Court",
+    "President",
+    "Governor",
+    "Legislation",
+    "Executive Order",
+    "Impeachment",
+    "Government",
+    "Federal",
+]
+
+# Keywords in market titles/descriptions
+title_keywords = [
+    "president",
+    "election",
+    "congress",
+    "senate",
+    "house of representatives",
+    "supreme court",
+    "governor",
+    "democrat",
+    "republican",
+    "legislation",
+    "bill",
+    "executive order",
+    "impeach",
+    "veto",
+    "nomination",
+    "confirmation",
+    "cabinet",
+    "attorney general",
+    "secretary of state",
+    "federal reserve",
+    "fed chair",
+    "speaker of the house",
+    "majority leader",
+    "minority leader",
+    "midterm",
+    "primary",
+    "caucus",
+    "electoral college",
+    "swing state",
+    "ballot",
+    "referendum",
+    "gerrymander",
+    "redistricting",
+    "filibuster",
+    "debt ceiling",
+    "government shutdown",
+    "sanctions",
+    "tariff",
+    "trade war",
+    "nato",
+    "united nations",
+    "ambassador",
+    "diplomat",
+    "treaty",
+    "indictment",
+    "arraignment",
+    "pardon",
+    "commute",
+]
+
+# Polymarket category slugs
+political_categories = [
+    "politics",
+    "elections",
+    "us-politics",
+    "world-politics",
+]
+
+# Minimum volume (USD) to track a political market
+min_volume_usd = 10000

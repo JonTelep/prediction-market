@@ -1,0 +1,38 @@
+[
+  {
+    "address": "0xwhale1",
+    "position": 50000,
+    "value": 32500,
+    "pctSupply": 0.35
+  },
+  {
+    "address": "0xwhale2",
+    "position": 30000,
+    "value": 19500,
+    "pctSupply": 0.21
+  },
+  {
+    "address": "0xmedium1",
+    "position": 15000,
+    "value": 9750,
+    "pctSupply": 0.10
+  },
+  {
+    "address": "0xmedium2",
+    "position": 10000,
+    "value": 6500,
+    "pctSupply": 0.07
+  },
+  {
+    "address": "0xsmall1",
+    "position": 5000,
+    "value": 3250,
+    "pctSupply": 0.035
+  },
+  {
+    "address": "0xsmall2",
+    "position": 3000,
+    "value": 1950,
+    "pctSupply": 0.021
+  }
+]
