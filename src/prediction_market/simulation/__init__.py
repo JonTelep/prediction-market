@@ -1,0 +1,39 @@
+"""Monte Carlo simulation engine for prediction market analysis.
+
+Provides stochastic modeling, importance sampling for rare-event detection,
+probability distribution fitting, and sequential Monte Carlo (particle filter)
+for real-time Bayesian state estimation.
+"""
+
+from prediction_market.simulation.distributions import (
+    BetaMarketModel,
+    DirichletMarketModel,
+    MarketModel,
+)
+from prediction_market.simulation.monte_carlo import MonteCarloEngine, SimulationResult
+from prediction_market.simulation.importance_sampler import (
+    ImportanceSampler,
+    TailRiskEstimate,
+)
+from prediction_market.simulation.particle_filter import (
+    MarketAwareTransition,
+    MarketContext,
+    ParticleFilter,
+    ParticleFilterResult,
+    TradeFlowAnalyzer,
+)
+
+__all__ = [
+    "BetaMarketModel",
+    "DirichletMarketModel",
+    "MarketModel",
+    "MonteCarloEngine",
+    "SimulationResult",
+    "ImportanceSampler",
+    "TailRiskEstimate",
+    "MarketAwareTransition",
+    "MarketContext",
+    "ParticleFilter",
+    "ParticleFilterResult",
+    "TradeFlowAnalyzer",
+]
