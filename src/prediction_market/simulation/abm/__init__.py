@@ -29,7 +29,7 @@ from prediction_market.simulation.abm.simulator import (
     ABMResult,
     DivergenceMetrics,
 )
-from prediction_market.simulation.abm.calibrator import Calibrator, CalibrationResult
+from prediction_market.simulation.abm.calibrator import Calibrator, CalibrationResult, TargetStatistics
 
 __all__ = [
     "InformedTrader",
@@ -45,4 +45,5 @@ __all__ = [
     "DivergenceMetrics",
     "Calibrator",
     "CalibrationResult",
+    "TargetStatistics",
 ]

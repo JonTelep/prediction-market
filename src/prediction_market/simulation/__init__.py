@@ -32,6 +32,12 @@ from prediction_market.simulation.copulas import (
     TailAlert,
     TailDependence,
 )
+from prediction_market.simulation.integration import (
+    SimulationEnhancedDetector,
+    SimulationSignals,
+    analyze_market,
+    generate_report,
+)
 from prediction_market.simulation.abm import (
     ABMConfig,
     ABMResult,
@@ -79,4 +85,8 @@ __all__ = [
     "NoiseTrader",
     "SimulatedMarket",
     "TraderAgent",
+    "SimulationEnhancedDetector",
+    "SimulationSignals",
+    "analyze_market",
+    "generate_report",
 ]
