@@ -9,6 +9,7 @@ dependencies = [
     "websockets>=14.0",
     "aiosqlite>=0.21",
     "pandas>=2.2",
+    "numpy>=1.26",
     "scipy>=1.14",
     "click>=8.1",
     "pydantic>=2.10",
