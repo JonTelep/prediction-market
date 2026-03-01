@@ -1,8 +1,9 @@
 """Monte Carlo simulation engine for prediction market analysis.
 
 Provides stochastic modeling, importance sampling for rare-event detection,
-probability distribution fitting, and sequential Monte Carlo (particle filter)
-for real-time Bayesian state estimation.
+probability distribution fitting, sequential Monte Carlo (particle filter)
+for real-time Bayesian state estimation, and copula-based tail dependence
+modeling for cross-market correlation analysis.
 """
 
 from prediction_market.simulation.distributions import (
@@ -22,6 +23,15 @@ from prediction_market.simulation.particle_filter import (
     ParticleFilterResult,
     TradeFlowAnalyzer,
 )
+from prediction_market.simulation.copulas import (
+    ClaytonCopula,
+    CopulaFitter,
+    DynamicCopulaTracker,
+    FrankCopula,
+    GumbelCopula,
+    TailAlert,
+    TailDependence,
+)
 
 __all__ = [
     "BetaMarketModel",
@@ -36,4 +46,11 @@ __all__ = [
     "ParticleFilter",
     "ParticleFilterResult",
     "TradeFlowAnalyzer",
+    "ClaytonCopula",
+    "CopulaFitter",
+    "DynamicCopulaTracker",
+    "FrankCopula",
+    "GumbelCopula",
+    "TailAlert",
+    "TailDependence",
 ]
