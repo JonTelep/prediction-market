@@ -32,6 +32,26 @@ from prediction_market.simulation.copulas import (
     TailAlert,
     TailDependence,
 )
+from prediction_market.simulation.integration import (
+    SimulationEnhancedDetector,
+    SimulationSignals,
+    analyze_market,
+    generate_report,
+)
+from prediction_market.simulation.abm import (
+    ABMConfig,
+    ABMResult,
+    ABMSimulator,
+    Calibrator,
+    CalibrationResult,
+    DivergenceMetrics,
+    InformedTrader,
+    MarketMaker,
+    MomentumTrader,
+    NoiseTrader,
+    SimulatedMarket,
+    TraderAgent,
+)
 
 __all__ = [
     "BetaMarketModel",
@@ -53,4 +73,20 @@ __all__ = [
     "GumbelCopula",
     "TailAlert",
     "TailDependence",
+    "ABMConfig",
+    "ABMResult",
+    "ABMSimulator",
+    "Calibrator",
+    "CalibrationResult",
+    "DivergenceMetrics",
+    "InformedTrader",
+    "MarketMaker",
+    "MomentumTrader",
+    "NoiseTrader",
+    "SimulatedMarket",
+    "TraderAgent",
+    "SimulationEnhancedDetector",
+    "SimulationSignals",
+    "analyze_market",
+    "generate_report",
 ]
