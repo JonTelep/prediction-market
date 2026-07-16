@@ -56,6 +56,63 @@ class TestGammaMarket:
         assert m.tag_labels == []
 
 
+class TestGammaMarketTokenOrder:
+    def test_standard_order(self):
+        m = GammaMarket(
+            id="x",
+            question="test",
+            outcomes=["Yes", "No"],
+            clobTokenIds=["tok-yes", "tok-no"],
+        )
+        assert m.yes_token_id == "tok-yes"
+        assert m.no_token_id == "tok-no"
+        assert m.yes_token_id == m.clob_token_ids[0]
+        assert m.no_token_id == m.clob_token_ids[1]
+
+    def test_inverted_order(self):
+        m = GammaMarket(
+            id="x",
+            question="test",
+            outcomes=["No", "Yes"],
+            clobTokenIds=["tok-a", "tok-b"],
+        )
+        # positional [0] would be "tok-a", but the label says it's NO
+        assert m.yes_token_id == m.clob_token_ids[1]
+        assert m.no_token_id == m.clob_token_ids[0]
+
+    def test_case_insensitive_labels(self):
+        m = GammaMarket(
+            id="x",
+            question="test",
+            outcomes=["NO", "YES"],
+            clobTokenIds=["tok-a", "tok-b"],
+        )
+        assert m.yes_token_id == "tok-b"
+        assert m.no_token_id == "tok-a"
+
+    def test_non_yes_no_labels_falls_back_to_positional(self):
+        m = GammaMarket(
+            id="x",
+            question="test",
+            outcomes=["Candidate A", "Candidate B"],
+            clobTokenIds=["tok-a", "tok-b"],
+        )
+        assert m.yes_token_id == "tok-a"
+        assert m.no_token_id == "tok-b"
+
+    def test_empty_token_list_returns_none(self):
+        m = GammaMarket(id="x", question="test", outcomes=["Yes", "No"], clobTokenIds=[])
+        assert m.yes_token_id is None
+        assert m.no_token_id is None
+
+    def test_single_token_no_returns_none(self):
+        m = GammaMarket(
+            id="x", question="test", outcomes=["Yes", "No"], clobTokenIds=["tok-a"]
+        )
+        assert m.yes_token_id == "tok-a"
+        assert m.no_token_id is None
+
+
 class TestTrade:
     def test_trade_properties(self):
         t = Trade(price="0.65", size="100", matchTime="2026-01-15T10:30:00Z")

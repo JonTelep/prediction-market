@@ -19,6 +19,7 @@ import httpx
 
 from prediction_market.config import AppConfig
 from prediction_market.data.external.models import ScheduledEvent
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ class CongressClient:
         request_params["format"] = "json"
 
         try:
-            resp = await self._client.get(url, params=request_params)
+            resp = await get_with_retry(self._client, url, params=request_params)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as exc:

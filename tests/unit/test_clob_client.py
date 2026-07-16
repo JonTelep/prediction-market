@@ -135,3 +135,20 @@ async def test_get_order_book_http_error(config):
             await client.get_order_book("token-yes-1")
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_order_book_retries_on_500_then_succeeds(config, orderbook_data):
+    route = respx.get(f"{config.apis.clob_base_url}/book")
+    route.side_effect = [
+        httpx.Response(500),
+        httpx.Response(200, json=orderbook_data),
+    ]
+    client = ClobClient(config)
+    try:
+        ob = await client.get_order_book("token-yes-1")
+        assert len(ob.bids) == 6
+        assert route.call_count == 2
+    finally:
+        await client.close()

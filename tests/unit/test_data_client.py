@@ -50,6 +50,23 @@ async def test_get_trades_list_response(config, trades_data):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_trades_retries_on_500_then_succeeds(config, trades_data):
+    route = respx.get(f"{config.apis.data_base_url}/trades")
+    route.side_effect = [
+        httpx.Response(500),
+        httpx.Response(200, json=trades_data),
+    ]
+    client = DataClient(config)
+    try:
+        trades = await client.get_trades(market_id="fixture-market-1")
+        assert len(trades) == 4
+        assert route.call_count == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_get_trades_dict_response(config, trades_data):
     """API may return trades wrapped in a dict with 'data' key."""
     respx.get(f"{config.apis.data_base_url}/trades").mock(

@@ -23,6 +23,7 @@ import httpx
 
 from prediction_market.config import AppConfig
 from prediction_market.data.external.models import NewsArticle, NewsCheckResult
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,8 @@ class NewsChecker:
         }
 
         try:
-            resp = await self._client.get(
+            resp = await get_with_retry(
+                self._client,
                 f"{self._gdelt_base_url}/doc/doc",
                 params=params,
             )
@@ -321,7 +323,8 @@ class NewsChecker:
         }
 
         try:
-            resp = await self._client.get(
+            resp = await get_with_retry(
+                self._client,
                 f"{self._newsapi_base_url}/everything",
                 params=params,
                 headers={"X-Api-Key": self._newsapi_key},

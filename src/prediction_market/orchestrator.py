@@ -106,6 +106,7 @@ class Orchestrator:
 
         # Tracked state
         self.markets: dict[str, TrackedMarket] = {}
+        self._token_order_warned: set[str] = set()
 
         # Agent handles
         self._agents: list[BaseAgent] = []
@@ -113,6 +114,31 @@ class Orchestrator:
         # Background tasks
         self._tasks: list[asyncio.Task[None]] = []
         self._shutdown_event = asyncio.Event()
+
+    def _check_token_order(self, market_id: str, m: GammaMarket) -> None:
+        """Warn once per market if label-mapped and positional token order disagree.
+
+        ``GammaMarket.yes_token_id``/``no_token_id`` prefer mapping by the
+        ``outcomes`` labels and fall back to the positional convention
+        (``clob_token_ids[0]``=YES, ``[1]``=NO). When the two disagree, the
+        market's outcome listing is inverted relative to the positional
+        assumption -- log it once so operators notice.
+        """
+        if market_id in self._token_order_warned:
+            return
+        if len(m.clob_token_ids) < 2:
+            return
+        positional_yes = m.clob_token_ids[0]
+        if m.yes_token_id is not None and m.yes_token_id != positional_yes:
+            logger.warning(
+                "Market %s (%s) has inverted YES/NO token order: "
+                "label-mapped yes_token_id=%s differs from positional clob_token_ids[0]=%s",
+                market_id,
+                m.question[:60],
+                m.yes_token_id,
+                positional_yes,
+            )
+            self._token_order_warned.add(market_id)
 
     # ------------------------------------------------------------------
     # Public API
@@ -344,6 +370,7 @@ class Orchestrator:
         for market_id, tracked in self.markets.items():
             m = tracked.market
             logger.info("Backfilling %s (%s)", market_id, m.question[:60])
+            self._check_token_order(market_id, m)
 
             # Persist the market record
             await save_market(
@@ -369,8 +396,8 @@ class Orchestrator:
                         await save_price_snapshot(
                             self._db,
                             market_id,
-                            price_yes=point.p if token_id == m.clob_token_ids[0] else None,
-                            price_no=point.p if len(m.clob_token_ids) > 1 and token_id == m.clob_token_ids[1] else None,
+                            price_yes=point.p if token_id == m.yes_token_id else None,
+                            price_no=point.p if token_id == m.no_token_id else None,
                         )
                         total_points += 1
                 except Exception:
@@ -505,13 +532,16 @@ class Orchestrator:
 
             for market_id, tracked in list(self.markets.items()):
                 m = tracked.market
+                self._check_token_order(market_id, m)
                 # -- Price snapshot --
                 try:
                     if m.clob_token_ids:
-                        price_yes = await self._clob.get_midpoint(m.clob_token_ids[0])
+                        price_yes = None
+                        if m.yes_token_id is not None:
+                            price_yes = await self._clob.get_midpoint(m.yes_token_id)
                         price_no = None
-                        if len(m.clob_token_ids) > 1:
-                            price_no = await self._clob.get_midpoint(m.clob_token_ids[1])
+                        if m.no_token_id is not None:
+                            price_no = await self._clob.get_midpoint(m.no_token_id)
                         await save_price_snapshot(
                             self._db,
                             market_id,

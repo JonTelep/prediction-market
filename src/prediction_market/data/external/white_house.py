@@ -19,6 +19,7 @@ import httpx
 
 from prediction_market.config import AppConfig
 from prediction_market.data.external.models import ScheduledEvent
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class WhiteHouseClient:
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
         """Make a GET request and return parsed JSON, or None on error."""
         try:
-            resp = await self._client.get(url, params=params)
+            resp = await get_with_retry(self._client, url, params=params)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as exc:

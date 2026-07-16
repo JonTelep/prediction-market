@@ -10,6 +10,21 @@ from prediction_market.config import AppConfig, load_config
 from prediction_market.data.polymarket.models import GammaMarket, OrderBook, OrderBookEntry
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip real backoff sleeps inside data.retry.get_with_retry during tests.
+
+    Only the retry helper's internal sleep alias is patched -- asyncio.sleep
+    itself is left alone so other timing-sensitive tests (e.g.
+    test_rate_limiter.py) keep using real sleeps.
+    """
+
+    async def _instant_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("prediction_market.data.retry._sleep", _instant_sleep)
+
+
 @pytest.fixture
 def app_config(tmp_path: Path) -> AppConfig:
     """Create a test config with temporary database."""

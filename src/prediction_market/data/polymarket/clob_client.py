@@ -10,6 +10,7 @@ import httpx
 from prediction_market.config import AppConfig
 from prediction_market.data.polymarket.models import ClobPriceHistory, OrderBook
 from prediction_market.data.polymarket.rate_limiter import TokenBucketRateLimiter
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class ClobClient:
         """Make a rate-limited GET request to the CLOB API."""
         await self._limiter.acquire()
         url = f"{self.base_url}{path}"
-        resp = await self._client.get(url, params=params)
+        resp = await get_with_retry(self._client, url, params=params)
         resp.raise_for_status()
         return resp.json()
 

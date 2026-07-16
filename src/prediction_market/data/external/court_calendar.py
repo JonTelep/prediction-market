@@ -19,6 +19,7 @@ import httpx
 
 from prediction_market.config import AppConfig
 from prediction_market.data.external.models import ScheduledEvent
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,8 @@ class CourtCalendarClient:
 
         url = f"{self.base_url}{path}"
         try:
-            resp = await self._client.get(
+            resp = await get_with_retry(
+                self._client,
                 url,
                 params=params,
                 headers=self._auth_headers(),
@@ -179,7 +181,6 @@ class CourtCalendarClient:
                     "case_name_short", ""
                 )
                 docket_number = item.get("docket", {})
-                court = item.get("court", "")
                 date_argued = item.get("date_argued", "")
 
                 description = f"Oral argument: {case_name}"

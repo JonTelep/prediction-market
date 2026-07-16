@@ -67,6 +67,49 @@ class GammaMarket(BaseModel):
             return []
         return [t.get("label", "") for t in self.tags if isinstance(t, dict)]
 
+    def _label_mapped_token(self, label: str) -> str | None:
+        """Map a Yes/No label to its token id via ``outcomes``, if possible.
+
+        Only trusted when ``outcomes`` has exactly two entries both labeled
+        (case-insensitively) "yes"/"no" and ``clob_token_ids`` has at least
+        two entries -- otherwise returns None so callers fall back to the
+        positional convention.
+        """
+        if len(self.outcomes) != 2 or len(self.clob_token_ids) < 2:
+            return None
+        lowered = [o.strip().lower() for o in self.outcomes]
+        if set(lowered) != {"yes", "no"}:
+            return None
+        index = lowered.index(label)
+        return self.clob_token_ids[index]
+
+    @property
+    def yes_token_id(self) -> str | None:
+        """The CLOB token id for the YES outcome.
+
+        Prefers mapping by the ``outcomes`` labels (catches inverted
+        Yes/No listings); falls back to the standard positional
+        convention (``clob_token_ids[0]``) when labels aren't a clean
+        Yes/No pair (e.g. candidate-named outcomes) or lengths mismatch.
+        Returns None if no token exists at all.
+        """
+        mapped = self._label_mapped_token("yes")
+        if mapped is not None:
+            return mapped
+        return self.clob_token_ids[0] if self.clob_token_ids else None
+
+    @property
+    def no_token_id(self) -> str | None:
+        """The CLOB token id for the NO outcome.
+
+        See ``yes_token_id`` for the label-mapping/positional-fallback
+        logic. Returns None if fewer than two tokens exist.
+        """
+        mapped = self._label_mapped_token("no")
+        if mapped is not None:
+            return mapped
+        return self.clob_token_ids[1] if len(self.clob_token_ids) > 1 else None
+
 
 class OrderBookEntry(BaseModel):
     """Single entry in an order book."""

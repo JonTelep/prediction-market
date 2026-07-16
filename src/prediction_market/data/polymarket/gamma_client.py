@@ -10,6 +10,7 @@ import httpx
 from prediction_market.config import AppConfig
 from prediction_market.data.polymarket.models import GammaMarket
 from prediction_market.data.polymarket.rate_limiter import TokenBucketRateLimiter
+from prediction_market.data.retry import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class GammaClient:
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         await self._limiter.acquire()
         url = f"{self.base_url}{path}"
-        resp = await self._client.get(url, params=params)
+        resp = await get_with_retry(self._client, url, params=params)
         resp.raise_for_status()
         return resp.json()
 
