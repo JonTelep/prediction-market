@@ -21,7 +21,8 @@ from pathlib import Path
 
 import click
 
-from prediction_market.config import load_config, load_political_keywords
+from prediction_market.config import load_config
+from prediction_market.data.political_filter import PoliticalClassification, PoliticalFilter
 from prediction_market.data.polymarket.clob_client import ClobClient
 from prediction_market.data.polymarket.data_client import DataClient
 from prediction_market.data.polymarket.gamma_client import GammaClient
@@ -36,61 +37,40 @@ from prediction_market.store.snapshots import (
 logger = logging.getLogger(__name__)
 
 
-def classify_political(
-    market: GammaMarket,
-    keywords_config: dict,
-) -> dict | None:
-    """Classify whether a market is political based on tags and title keywords.
+def select_political_markets(
+    markets: list[GammaMarket],
+    political_filter: PoliticalFilter,
+) -> list[tuple[GammaMarket, PoliticalClassification]]:
+    """Select markets to backfill using the shared :class:`PoliticalFilter`.
 
-    Returns a classification dict with confidence and reasons, or None
-    if the market does not appear to be political.
+    A market is selected iff ``classification.is_political`` is True AND
+    ``market.volume >= political_filter.min_volume``.
+
+    This uses the same classifier as ``monitor``/``scan`` -- one source of
+    truth for political classification. It is NOT equivalent to the old
+    inline ``classify_political`` this replaced: that scored any keyword
+    match a flat +0.3 and treated any non-empty reason list as political
+    (no confidence gate), while ``PoliticalFilter.classify`` scores
+    keywords incrementally (``min(0.3, matches * 0.1)``) and gates on
+    ``confidence >= 0.3``. Consequence: a market matching only 1-2
+    keywords (confidence 0.1-0.2, no tag/category hit) that used to be
+    backfilled will no longer be selected. This is the intended
+    unification, not a regression.
     """
-    classification = keywords_config.get("classification", {})
-    political_tags = {t.lower() for t in classification.get("political_tags", [])}
-    title_keywords = classification.get("title_keywords", [])
-    political_categories = {c.lower() for c in classification.get("political_categories", [])}
-    min_volume = classification.get("min_volume_usd", 10000)
-
-    reasons: list[str] = []
-    confidence = 0.0
-
-    # Check tags
-    market_tags = {t.lower() for t in market.tag_labels}
-    matching_tags = market_tags & political_tags
-    if matching_tags:
-        reasons.append(f"tags: {', '.join(matching_tags)}")
-        confidence += 0.4
-
-    # Check category
-    if market.category.lower() in political_categories:
-        reasons.append(f"category: {market.category}")
-        confidence += 0.3
-
-    # Check title keywords
-    title_lower = market.question.lower()
-    desc_lower = market.description.lower()
-    matched_keywords: list[str] = []
-    for kw in title_keywords:
-        if kw in title_lower or kw in desc_lower:
-            matched_keywords.append(kw)
-    if matched_keywords:
-        reasons.append(f"keywords: {', '.join(matched_keywords[:5])}")
-        confidence += 0.3
-
-    if not reasons:
-        return None
-
-    # Volume filter
-    if market.volume < min_volume:
-        return None
-
-    confidence = min(confidence, 1.0)
-    return {"confidence": confidence, "reasons": reasons}
+    selected: list[tuple[GammaMarket, PoliticalClassification]] = []
+    for market in markets:
+        classification = political_filter.classify(market)
+        if not classification.is_political:
+            continue
+        if market.volume < political_filter.min_volume:
+            continue
+        selected.append((market, classification))
+    return selected
 
 
 async def backfill_market(
     market: GammaMarket,
-    political_class: dict,
+    classification: PoliticalClassification,
     clob: ClobClient,
     data: DataClient,
     db,
@@ -102,8 +82,14 @@ async def backfill_market(
     """
     stats = {"price_points": 0, "trades": 0}
 
-    # Save/update the market record
-    await save_market(db, market, political_class)
+    # Save/update the market record. save_market() expects a plain dict
+    # with "confidence"/"reasons" keys, not the PoliticalClassification
+    # dataclass.
+    await save_market(
+        db,
+        market,
+        {"confidence": classification.confidence, "reasons": classification.reasons},
+    )
 
     # Determine time range
     now_ts = int(time.time())
@@ -177,7 +163,7 @@ async def run_backfill(days: int, config_path: str | None, dry_run: bool) -> Non
     """Main backfill orchestration."""
     cfg_path = Path(config_path) if config_path else None
     config = load_config(cfg_path)
-    keywords_config = load_political_keywords()
+    political_filter = PoliticalFilter()
 
     # Initialize clients
     gamma = GammaClient(config)
@@ -193,12 +179,8 @@ async def run_backfill(days: int, config_path: str | None, dry_run: bool) -> Non
         all_markets = active_markets + closed_markets
         logger.info("Found %d total markets", len(all_markets))
 
-        # Step 2: Filter to political markets
-        political_markets: list[tuple[GammaMarket, dict]] = []
-        for market in all_markets:
-            classification = classify_political(market, keywords_config)
-            if classification is not None:
-                political_markets.append((market, classification))
+        # Step 2: Filter to political markets via the shared PoliticalFilter
+        political_markets = select_political_markets(all_markets, political_filter)
 
         logger.info(
             "Identified %d political markets (out of %d total)",
@@ -209,7 +191,7 @@ async def run_backfill(days: int, config_path: str | None, dry_run: bool) -> Non
         if dry_run:
             for market, cls in political_markets:
                 print(
-                    f"  [{cls['confidence']:.1f}] {market.question[:80]}"
+                    f"  [{cls.confidence:.1f}] {market.question[:80]}"
                     f"  (vol=${market.volume:,.0f})"
                 )
             print(f"\nTotal: {len(political_markets)} political markets")

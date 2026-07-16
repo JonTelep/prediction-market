@@ -426,7 +426,7 @@ class Orchestrator:
             if not classification.is_political:
                 continue
             # Volume filter
-            if m.volume < self._filter._min_volume:
+            if m.volume < self._filter.min_volume:
                 continue
 
             if m.id not in self.markets:

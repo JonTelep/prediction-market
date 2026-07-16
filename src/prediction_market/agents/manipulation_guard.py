@@ -80,6 +80,16 @@ class LiquidityAnalyzer:
         """Score based on HHI (Herfindahl-Hirschman Index) of holder pct.
 
         An HHI of 1.0 means one holder owns everything.
+
+        ``pct_supply`` is expected as a **fraction in [0, 1]**, not a
+        percentage in [0, 100] -- verified against
+        ``tests/fixtures/holders.json`` (values top out at 0.35). No
+        percentage-to-fraction normalisation is performed; if the upstream
+        Data API ever returns percentages instead, this formula would need
+        to be revisited.
+
+        An empty holder list returns 1.0 (maximally risky) rather than 0.0
+        -- unknown concentration is treated as high risk, deliberately.
         """
         if not holders:
             return 1.0
