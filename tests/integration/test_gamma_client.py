@@ -72,6 +72,23 @@ async def test_get_market_not_found(config):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_markets_retries_on_500_then_succeeds(config, markets_data):
+    route = respx.get(f"{config.apis.gamma_base_url}/markets")
+    route.side_effect = [
+        httpx.Response(500),
+        httpx.Response(200, json=markets_data),
+    ]
+    client = GammaClient(config)
+    try:
+        markets = await client.get_markets()
+        assert len(markets) == 3
+        assert route.call_count == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_get_all_markets_pagination(config, markets_data):
     # First page returns full batch, second page returns empty
     route = respx.get(f"{config.apis.gamma_base_url}/markets")

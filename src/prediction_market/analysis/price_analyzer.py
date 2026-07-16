@@ -2,7 +2,7 @@
 
 Tracks market prices using both a rolling-window approach and an exponentially
 weighted moving average.  Anomalies are flagged when the z-score of a price
-return exceeds the configured threshold.
+*logit-return* exceeds the configured threshold.
 """
 
 from __future__ import annotations
@@ -18,6 +18,37 @@ from prediction_market.config import ThresholdConfig
 
 logger = logging.getLogger(__name__)
 
+_CLAMP_MIN = 0.005
+_CLAMP_MAX = 0.995
+
+
+def _clamp(p: float) -> float:
+    """Clamp a probability into ``[0.005, 0.995]``.
+
+    Prediction-market prices can sit exactly at 0.0 or 1.0 (fully resolved
+    markets), where ``logit`` is undefined (+/- infinity). Clamping keeps
+    every logit-return finite. The 0.005 bound is a deliberate choice: it
+    caps a single observation's |logit| at ~5.29, which is comfortably above
+    any z-score threshold this system uses, so it never silently suppresses
+    a genuine move -- it only prevents infinities.
+    """
+    return min(max(p, _CLAMP_MIN), _CLAMP_MAX)
+
+
+def _logit(p: float) -> float:
+    """Log-odds of probability *p*: ``ln(p / (1 - p))``.
+
+    Prediction-market prices live in [0, 1], so raw or log price-change
+    variance shrinks mechanically near the boundaries (a move from 0.98 to
+    0.99 is tiny in absolute/log terms but often means as much as a move
+    from 0.50 to 0.60). The logit maps (0, 1) onto all of the real line and
+    is the standard space for statistical modeling of prediction-market
+    prices -- see docs/RESEARCH-BRIEF.md Section 4. Callers must pass an
+    already-clamped *p* (see :func:`_clamp`) to avoid a math domain error at
+    the exact boundaries.
+    """
+    return math.log(p / (1.0 - p))
+
 
 @dataclass
 class PriceAnomaly:
@@ -28,8 +59,8 @@ class PriceAnomaly:
         z_score: How many standard deviations the price return is from normal.
         current_price: The price observation that triggered the anomaly.
         baseline_price: The EWMA baseline price at the time of detection.
-        price_return: The log-return of the current observation relative to
-            the previous observation.
+        price_return: The logit-return (log-odds difference) of the current
+            observation relative to the previous observation.
         timestamp: When the anomalous observation was recorded.
     """
 
@@ -52,16 +83,18 @@ class _MarketPriceState:
 
 
 class PriceAnalyzer:
-    """Detects anomalous price moves using EWMA baselines and rolling z-scores.
+    """Detects anomalous price moves using rolling z-scores of logit-returns.
 
     For each market, the analyzer maintains:
 
-    * An :class:`~prediction_market.analysis.timeseries.EWMA` to track the
-      baseline price level.
     * A :class:`~prediction_market.analysis.timeseries.RollingStats` over
-      log-returns to detect sudden moves.
+      logit-returns (log-odds differences) -- this is what actually drives
+      anomaly scoring.
+    * An :class:`~prediction_market.analysis.timeseries.EWMA` of the raw
+      price, kept only as reporting context (``baseline_price`` on
+      :class:`PriceAnomaly`). It does not feed the z-score.
 
-    A price anomaly is flagged when the z-score of the latest log-return
+    A price anomaly is flagged when the z-score of the latest logit-return
     exceeds :pyattr:`ThresholdConfig.price_zscore`.
 
     Args:
@@ -90,8 +123,9 @@ class PriceAnalyzer:
         """Record a price observation for a market.
 
         The first observation initialises the EWMA baseline.  Subsequent
-        observations compute a log-return and feed it into both the EWMA
-        and the rolling-return tracker.
+        observations compute a logit-return (log-odds difference) and feed
+        it into the rolling-return tracker; the raw price feeds the EWMA
+        baseline separately.
 
         Args:
             market_id: Polymarket market identifier.
@@ -109,10 +143,13 @@ class PriceAnalyzer:
 
         state = self._states[market_id]
 
-        # Compute log-return if we have a previous price.
-        if state.last_price is not None and state.last_price > 0 and price > 0:
-            log_return = math.log(price / state.last_price)
-            state.return_stats.add(log_return, timestamp)
+        # Compute logit-return if we have a previous price. Clamping makes
+        # the old `last_price > 0 and price > 0` guard unnecessary -- both
+        # endpoints are finite after clamping -- but we still require a
+        # previous observation to exist.
+        if state.last_price is not None:
+            logit_return = _logit(_clamp(price)) - _logit(_clamp(state.last_price))
+            state.return_stats.add(logit_return, timestamp)
 
         # Update EWMA baseline with the raw price.
         state.ewma.update(price)
@@ -122,7 +159,7 @@ class PriceAnalyzer:
     def check_anomaly(self, market_id: str) -> PriceAnomaly | None:
         """Check whether the latest price observation for *market_id* is anomalous.
 
-        An anomaly is flagged when the z-score of the most recent log-return
+        An anomaly is flagged when the z-score of the most recent logit-return
         exceeds :pyattr:`ThresholdConfig.price_zscore`.
 
         Args:
@@ -166,6 +203,35 @@ class PriceAnalyzer:
             latest_return,
         )
         return anomaly
+
+    def current_z_score(self, market_id: str) -> float | None:
+        """Return the z-score of the latest logit-return, regardless of threshold.
+
+        Unlike :meth:`check_anomaly`, this does not require the z-score to
+        cross :pyattr:`ThresholdConfig.price_zscore` — it is used to combine
+        price and volume signals even when only one of them individually
+        triggers. Returns ``None`` during warm-up (fewer than 3 return
+        observations), the same guard :meth:`check_anomaly` uses.
+
+        Args:
+            market_id: Polymarket market identifier.
+
+        Returns:
+            The latest logit-return z-score, or ``None`` if unavailable.
+        """
+        state = self._states.get(market_id)
+        if state is None:
+            return None
+
+        rs = state.return_stats
+        if rs.count < 3:
+            return None
+
+        latest_return = rs.latest
+        if latest_return is None:
+            return None
+
+        return rs.z_score(latest_return)
 
     # ------------------------------------------------------------------
     # Bulk helpers

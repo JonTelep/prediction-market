@@ -7,15 +7,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import sys
 from datetime import datetime, timezone
 
 from prediction_market.config import load_config
 from prediction_market.data.political_filter import PoliticalFilter
 from prediction_market.data.polymarket.gamma_client import GammaClient
 from prediction_market.store.database import init_database
+from prediction_market.store.snapshots import save_market, save_price_snapshot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -38,31 +37,14 @@ async def main() -> None:
         for market in political:
             classification = pf.classify(market)
 
-            # Upsert market into DB
-            await db.execute(
-                """INSERT OR REPLACE INTO markets
-                   (id, question, description, category, tags, slug, condition_id,
-                    clob_token_ids, volume, liquidity, active, closed,
-                    political_confidence, political_reasons, created_at, end_date, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                (
-                    market.id,
-                    market.question,
-                    market.description,
-                    market.category,
-                    json.dumps(market.tag_labels),
-                    market.slug,
-                    market.condition_id,
-                    json.dumps(market.clob_token_ids),
-                    market.volume,
-                    market.liquidity,
-                    int(market.active),
-                    int(market.closed),
-                    classification.confidence,
-                    json.dumps(classification.reasons),
-                    market.created_at,
-                    market.end_date,
-                ),
+            # Upsert market into DB. save_market() is an ON CONFLICT upsert
+            # that does NOT clobber first_seen on an existing row -- unlike
+            # the raw "INSERT OR REPLACE" this replaces, which reset
+            # first_seen on every run. This is a deliberate improvement.
+            await save_market(
+                db,
+                market,
+                {"confidence": classification.confidence, "reasons": classification.reasons},
             )
 
             # Save a price snapshot
@@ -70,10 +52,14 @@ async def main() -> None:
             price_yes = float(prices[0]) if len(prices) > 0 else None
             price_no = float(prices[1]) if len(prices) > 1 else None
 
-            await db.execute(
-                """INSERT INTO snapshots (market_id, price_yes, price_no, volume_24hr, volume_total, liquidity)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (market.id, price_yes, price_no, market.volume_24hr, market.volume, market.liquidity),
+            await save_price_snapshot(
+                db,
+                market_id=market.id,
+                price_yes=price_yes,
+                price_no=price_no,
+                volume_24hr=market.volume_24hr,
+                volume_total=market.volume,
+                liquidity=market.liquidity,
             )
 
         await db.commit()

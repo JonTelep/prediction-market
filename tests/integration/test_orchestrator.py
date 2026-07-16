@@ -101,8 +101,11 @@ async def test_backfill(config, gamma_markets_data, price_history_data, trades_d
     orch = Orchestrator(config)
     total_points = await orch.backfill(days=7)
 
-    # Should have ingested some data points (depends on how many political markets)
-    assert total_points >= 0
+    # gamma_markets.json has 2 political markets (fixture-market-1, -2), each
+    # with 2 CLOB tokens (yes/no); price_history.json's mocked route returns
+    # the same 14-point history for every token request: 2 markets * 2
+    # tokens * 14 points = 56.
+    assert total_points == 56
 
 
 @pytest.mark.asyncio

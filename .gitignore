@@ -9,7 +9,7 @@ build/
 .venv/
 venv/
 .env
-data/
+/data/
 *.db
 *.db-wal
 *.db-shm

@@ -88,15 +88,22 @@ class RollingStats:
 
     @property
     def std(self) -> float:
-        """Population standard deviation of values in the window.
+        """Sample standard deviation (Bessel's correction, divide by n-1) of
+        values in the window.
 
-        Returns 0.0 when fewer than 2 observations are present.
+        Population stdev (÷n) systematically understates spread for the small
+        warm-up windows this system operates with (3+ observations), which
+        inflates z-scores right when there is the least evidence to trust
+        them. Sample stdev is the honest estimator here.
+
+        Returns 0.0 when fewer than 2 observations are present -- this is
+        also the divide-by-zero guard for the ``n - 1`` denominator.
         """
         n = len(self._values)
         if n < 2:
             return 0.0
         m = self.mean
-        variance = sum((v.value - m) ** 2 for v in self._values) / n
+        variance = sum((v.value - m) ** 2 for v in self._values) / (n - 1)
         return math.sqrt(variance)
 
     def z_score(self, value: float) -> float:

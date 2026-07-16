@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE TABLE IF NOT EXISTS scheduled_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,  -- 'congress', 'court', 'whitehouse'
+    source TEXT NOT NULL,  -- 'congress.gov', 'courtlistener', 'whitehouse.gov'
     event_type TEXT DEFAULT '',
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
@@ -126,6 +126,7 @@ CREATE INDEX IF NOT EXISTS idx_orderbook_market_time ON orderbook_snapshots(mark
 CREATE INDEX IF NOT EXISTS idx_trades_market_time ON trades(market_id, match_time);
 CREATE INDEX IF NOT EXISTS idx_trades_owner ON trades(owner);
 CREATE INDEX IF NOT EXISTS idx_events_date ON scheduled_events(event_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_unique ON scheduled_events(source, title, event_date);
 CREATE INDEX IF NOT EXISTS idx_reports_market ON anomaly_reports(market_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_severity ON anomaly_reports(severity, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_agent ON anomaly_reports(agent, created_at);
