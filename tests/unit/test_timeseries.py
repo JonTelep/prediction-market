@@ -33,6 +33,21 @@ class TestRollingStats:
             rs.add(v, now)
         assert rs.std == pytest.approx(0.0)
 
+    def test_std_is_sample_not_population(self):
+        # values [1, 2, 3, 4]: mean = 10/4 = 2.5
+        # squared deviations: 2.25, 0.25, 0.25, 2.25 -> sum = 5.0
+        # sample variance = 5.0 / (n - 1) = 5.0 / 3 = 1.6666...
+        # sample std = sqrt(5/3) = 1.2909944487...
+        # (population std would instead divide by n=4: sqrt(1.25) = 1.1180339887,
+        # which is what the old implementation returned -- this is the
+        # regression check for the population -> sample switch.)
+        rs = RollingStats(window=timedelta(days=7))
+        now = datetime.now(timezone.utc)
+        for i, v in enumerate([1.0, 2.0, 3.0, 4.0]):
+            rs.add(v, now + timedelta(seconds=i))
+        assert rs.mean == pytest.approx(2.5)
+        assert rs.std == pytest.approx(1.2909944487)
+
     def test_z_score(self):
         rs = RollingStats(window=timedelta(days=7))
         now = datetime.now(timezone.utc)
