@@ -17,6 +17,9 @@ from typing import Any
 import aiosqlite
 import httpx
 
+from prediction_market.agents.base import BaseAgent
+from prediction_market.agents.info_leak_detector import InfoLeakDetector
+from prediction_market.agents.manipulation_guard import ManipulationGuard
 from prediction_market.config import AppConfig
 from prediction_market.data.political_filter import PoliticalClassification, PoliticalFilter
 from prediction_market.data.polymarket.clob_client import ClobClient
@@ -31,19 +34,6 @@ from prediction_market.reporting.sink import (
     WebhookSink,
 )
 from prediction_market.store.database import init_database
-
-# Lazy imports for modules that may not exist yet ----------------------------
-# These are structured so the orchestrator file can be imported even if the
-# downstream agent or WebSocket modules are still being developed.
-try:
-    from prediction_market.agents.info_leak_detector import InfoLeakDetector
-except ImportError:  # pragma: no cover
-    InfoLeakDetector = None  # type: ignore[assignment,misc]
-
-try:
-    from prediction_market.agents.manipulation_guard import ManipulationGuard
-except ImportError:  # pragma: no cover
-    ManipulationGuard = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +101,7 @@ class Orchestrator:
         self.markets: dict[str, TrackedMarket] = {}
 
         # Agent handles
-        self._agents: list[Any] = []
+        self._agents: list[BaseAgent] = []
 
         # Background tasks
         self._tasks: list[asyncio.Task[None]] = []
@@ -121,8 +111,13 @@ class Orchestrator:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self) -> None:
-        """Initialise all subsystems and run until a shutdown signal fires."""
+    async def _init_resources(self) -> None:
+        """Initialise DB, clients, sinks, initial market discovery, and agents.
+
+        Extracted from :meth:`start` so tests can drive the wiring with a
+        live connection without installing signal handlers or launching
+        background tasks / agent loops. Returns before any of those.
+        """
         logger.info("Orchestrator starting up")
 
         # 1. Database
@@ -149,13 +144,14 @@ class Orchestrator:
         # 6. Report sinks
         self._sink = self._build_sinks()
 
-        # 7. Agents
-        self._agents = self._build_agents()
-        if self._agents:
-            agent_names = [type(a).__name__ for a in self._agents]
-            logger.info("Agents initialised: %s", ", ".join(agent_names))
-        else:
-            logger.warning("No agents were initialised (missing implementations?)")
+        # 7. Agents (fail-fast: a mis-wired agent raises out of here)
+        self._agents = self._build_agents(self._db, [self._sink])
+        agent_names = [type(a).__name__ for a in self._agents]
+        logger.info("Agents initialised: %s", ", ".join(agent_names))
+
+    async def start(self) -> None:
+        """Initialise all subsystems and run until a shutdown signal fires."""
+        await self._init_resources()
 
         # 8. Install signal handlers
         self._install_signal_handlers()
@@ -174,13 +170,10 @@ class Orchestrator:
             )
         )
 
-        # Launch agent loops
+        # 10. Start agents (BaseAgent.start() owns the tick loop and error
+        # isolation -- see agents/base.py:63-102).
         for agent in self._agents:
-            task = asyncio.create_task(
-                self._run_agent(agent),
-                name=f"agent-{type(agent).__name__}",
-            )
-            self._tasks.append(task)
+            await agent.start()
 
         logger.info(
             "Orchestrator running  --  tracking %d political markets, %d agents active",
@@ -196,7 +189,7 @@ class Orchestrator:
         """Gracefully shut down all background tasks and release resources."""
         logger.info("Orchestrator shutting down")
 
-        # Cancel tasks
+        # Cancel background (non-agent) tasks
         for task in self._tasks:
             if not task.done():
                 task.cancel()
@@ -204,13 +197,12 @@ class Orchestrator:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
-        # Close agents
+        # Stop agents (BaseAgent.stop() cancels their loop task and awaits it)
         for agent in self._agents:
-            if hasattr(agent, "close"):
-                try:
-                    await agent.close()
-                except Exception:
-                    logger.exception("Error closing agent %s", type(agent).__name__)
+            try:
+                await agent.stop()
+            except Exception:
+                logger.exception("Error stopping agent %s", type(agent).__name__)
 
         # Close sinks
         if self._sink is not None:
@@ -529,51 +521,6 @@ class Orchestrator:
                 last_orderbook_run = now
 
     # ------------------------------------------------------------------
-    # Agent runner (error isolation)
-    # ------------------------------------------------------------------
-
-    async def _run_agent(self, agent: Any) -> None:
-        """Run a single agent in an isolated loop.
-
-        If the agent raises, the error is logged and the loop retries
-        after a brief backoff.  One agent crashing does not affect others.
-        """
-        name = type(agent).__name__
-        backoff = 5  # seconds
-        max_backoff = 300  # 5 minutes
-
-        while not self._shutdown_event.is_set():
-            try:
-                await agent.run(
-                    markets=self.markets,
-                    db=self._db,
-                    clob=self._clob,
-                    data=self._data,
-                    sink=self._sink,
-                    shutdown=self._shutdown_event,
-                    config=self.config,
-                )
-                # If run() returns cleanly, the agent decided to exit
-                logger.info("Agent %s exited cleanly", name)
-                return
-            except asyncio.CancelledError:
-                logger.info("Agent %s cancelled", name)
-                return
-            except Exception:
-                logger.exception(
-                    "Agent %s crashed; restarting in %ds", name, backoff
-                )
-                try:
-                    await asyncio.wait_for(
-                        self._shutdown_event.wait(),
-                        timeout=backoff,
-                    )
-                    return  # shutdown requested during backoff
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2, max_backoff)
-
-    # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
 
@@ -597,26 +544,35 @@ class Orchestrator:
             return sinks[0]
         return CompositeSink(sinks)
 
-    def _build_agents(self) -> list[Any]:
-        """Instantiate the configured surveillance agents."""
-        agents: list[Any] = []
+    def _build_agents(
+        self, db: aiosqlite.Connection, sinks: list[ReportSink]
+    ) -> list[BaseAgent]:
+        """Instantiate the configured surveillance agents.
+
+        Construction failures propagate -- a mis-wired agent must crash
+        startup loudly rather than being logged-and-ignored.
+        """
+        valid_filters = ("info-leak", "manipulation")
+        if self._agent_filter is not None and self._agent_filter not in valid_filters:
+            raise ValueError(
+                f"Unknown agent filter {self._agent_filter!r}; "
+                f"expected one of {valid_filters} or None"
+            )
+
+        agents: list[BaseAgent] = []
 
         want_info_leak = self._agent_filter in (None, "info-leak")
         want_manipulation = self._agent_filter in (None, "manipulation")
 
-        if want_info_leak and InfoLeakDetector is not None:
-            try:
-                agents.append(InfoLeakDetector(self.config))
-                logger.info("InfoLeakDetector initialised")
-            except Exception:
-                logger.exception("Failed to initialise InfoLeakDetector")
+        if want_info_leak:
+            agents.append(InfoLeakDetector(self.config, db, sinks))
+            logger.info("InfoLeakDetector initialised")
 
-        if want_manipulation and ManipulationGuard is not None:
-            try:
-                agents.append(ManipulationGuard(self.config))
-                logger.info("ManipulationGuard initialised")
-            except Exception:
-                logger.exception("Failed to initialise ManipulationGuard")
+        if want_manipulation:
+            agents.append(
+                ManipulationGuard(self.config, db, sinks, http_client=self._http)
+            )
+            logger.info("ManipulationGuard initialised")
 
         return agents
 

@@ -198,7 +198,7 @@ class ManipulationGuard(BaseAgent):
     async def _fetch_holders(self, condition_id: str) -> list[MarketHolder]:
         """Fetch top holders from the Data API."""
         await self._data_limiter.acquire()
-        url = f"{self.config.apis.data_base_url}/positions"
+        url = f"{self.config.apis.data_base_url}/holders"
         try:
             resp = await self._http.get(
                 url, params={"condition_id": condition_id, "limit": 50}
