@@ -21,6 +21,9 @@ from prediction_market.agents.base import BaseAgent
 from prediction_market.agents.info_leak_detector import InfoLeakDetector
 from prediction_market.agents.manipulation_guard import ManipulationGuard
 from prediction_market.config import AppConfig
+from prediction_market.data.external.congress import CongressClient
+from prediction_market.data.external.court_calendar import CourtCalendarClient
+from prediction_market.data.external.white_house import WhiteHouseClient
 from prediction_market.data.political_filter import PoliticalClassification, PoliticalFilter
 from prediction_market.data.polymarket.clob_client import ClobClient
 from prediction_market.data.polymarket.data_client import DataClient
@@ -34,6 +37,7 @@ from prediction_market.reporting.sink import (
     WebhookSink,
 )
 from prediction_market.store.database import init_database
+from prediction_market.store.queries import save_scheduled_events
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +100,9 @@ class Orchestrator:
         self._data: DataClient | None = None
         self._filter: PoliticalFilter | None = None
         self._sink: ReportSink | None = None
+        self._congress: CongressClient | None = None
+        self._court: CourtCalendarClient | None = None
+        self._white_house: WhiteHouseClient | None = None
 
         # Tracked state
         self.markets: dict[str, TrackedMarket] = {}
@@ -134,6 +141,9 @@ class Orchestrator:
         self._gamma = GammaClient(self.config, http_client=self._http)
         self._clob = ClobClient(self.config, http_client=self._http)
         self._data = DataClient(self.config, http_client=self._http)
+        self._congress = CongressClient(self.config, http_client=self._http)
+        self._court = CourtCalendarClient(self.config, http_client=self._http)
+        self._white_house = WhiteHouseClient(self.config, http_client=self._http)
 
         # 4. Political filter
         self._filter = PoliticalFilter()
@@ -167,6 +177,12 @@ class Orchestrator:
             asyncio.create_task(
                 self._periodic_snapshot_loop(),
                 name="snapshot-loop",
+            )
+        )
+        self._tasks.append(
+            asyncio.create_task(
+                self._periodic_event_refresh(),
+                name="event-refresh",
             )
         )
 
@@ -212,7 +228,14 @@ class Orchestrator:
                 logger.exception("Error closing report sink")
 
         # Close API clients (they do NOT own the shared http client)
-        for client in (self._gamma, self._clob, self._data):
+        for client in (
+            self._gamma,
+            self._clob,
+            self._data,
+            self._congress,
+            self._court,
+            self._white_house,
+        ):
             if client is not None:
                 try:
                     await client.close()
@@ -519,6 +542,56 @@ class Orchestrator:
 
             if run_orderbook:
                 last_orderbook_run = now
+
+    async def _periodic_event_refresh(self) -> None:
+        """Periodically refresh scheduled events from the government-calendar
+        clients (Congress, court, White House) into the ``scheduled_events``
+        table.
+
+        Refreshes once immediately at startup -- before the first sleep --
+        so the info-leak detector's event amplifier has data to work with
+        from the very first tick, rather than waiting a full interval.
+        """
+        interval = self.config.polling.event_refresh_interval_seconds
+
+        await self._refresh_scheduled_events()
+
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=interval,
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
+            await self._refresh_scheduled_events()
+
+    async def _refresh_scheduled_events(self) -> None:
+        """Fetch upcoming events from all three calendar clients and persist
+        them. One failed cycle does not kill the loop.
+        """
+        assert self._congress is not None
+        assert self._court is not None
+        assert self._white_house is not None
+        assert self._db is not None
+
+        try:
+            hearings = await self._congress.get_upcoming_hearings(days_ahead=7)
+            votes = await self._congress.get_upcoming_votes(days_ahead=7)
+            arguments = await self._court.get_upcoming_arguments(days_ahead=14)
+            schedule = await self._white_house.get_schedule(days_ahead=7)
+
+            events = hearings + votes + arguments + schedule
+            inserted = await save_scheduled_events(self._db, events)
+            logger.info(
+                "Event refresh complete: %d new scheduled events inserted "
+                "(%d fetched)",
+                inserted,
+                len(events),
+            )
+        except Exception:
+            logger.exception("Error during periodic event refresh")
 
     # ------------------------------------------------------------------
     # Builders

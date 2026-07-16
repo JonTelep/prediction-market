@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE TABLE IF NOT EXISTS scheduled_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,  -- 'congress', 'court', 'whitehouse'
+    source TEXT NOT NULL,  -- 'congress.gov', 'courtlistener', 'whitehouse.gov'
     event_type TEXT DEFAULT '',
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
