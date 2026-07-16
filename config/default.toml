@@ -16,6 +16,7 @@ event_proximity_hours = 24
 event_amplifier = 1.5
 news_dampener = 0.3
 rolling_window_days = 7
+alert_cooldown_minutes = 60
 
 # Agent 2: Manipulation Guard
 susceptibility_threshold = 0.7

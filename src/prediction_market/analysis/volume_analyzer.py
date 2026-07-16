@@ -124,6 +124,31 @@ class VolumeAnalyzer:
         )
         return anomaly
 
+    def current_z_score(self, market_id: str) -> float | None:
+        """Return the z-score of the latest volume observation, regardless of threshold.
+
+        Unlike :meth:`check_anomaly`, this does not require the z-score to
+        cross :pyattr:`ThresholdConfig.volume_zscore` — it is used to combine
+        price and volume signals even when only one of them individually
+        triggers. Returns ``None`` during warm-up (fewer than 3
+        observations), the same guard :meth:`check_anomaly` uses.
+
+        Args:
+            market_id: Polymarket market identifier.
+
+        Returns:
+            The latest volume z-score, or ``None`` if unavailable.
+        """
+        stats = self._stats.get(market_id)
+        if stats is None or stats.count < 3:
+            return None
+
+        latest = stats.latest
+        if latest is None:
+            return None
+
+        return stats.z_score(latest)
+
     # ------------------------------------------------------------------
     # Bulk helpers
     # ------------------------------------------------------------------

@@ -35,6 +35,7 @@ class ThresholdConfig(BaseModel):
     event_amplifier: float = 1.5
     news_dampener: float = 0.3
     rolling_window_days: int = 7
+    alert_cooldown_minutes: int = 60
     susceptibility_threshold: float = 0.7
     liquidity_drop_pct: float = 0.50
     depth_weight: float = 0.30
