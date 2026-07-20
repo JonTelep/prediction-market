@@ -107,6 +107,100 @@ def test_markdown_format_high_confidence_note(sample_report):
     assert "High-confidence alert" in output
 
 
+def test_markdown_format_wallet_evidence_and_cusum(sample_report):
+    import dataclasses
+
+    report = dataclasses.replace(
+        sample_report,
+        details={
+            **sample_report.details,
+            "wallet_evidence": [
+                {
+                    "wallet": "0x1111111111111111111111111111111111aaaa",
+                    "trade_count": 4,
+                    "total_volume_usd": 12000.0,
+                    "volume_share": 0.75,
+                    "directional_concentration": 0.9,
+                    "is_fresh": True,
+                    "first_trade": "2026-02-19 08:00:00",
+                    "score": 0.812,
+                },
+                {
+                    "wallet": "0x2222222222222222222222222222222222bbbb",
+                    "trade_count": 2,
+                    "total_volume_usd": 3000.0,
+                    "volume_share": 0.19,
+                    "directional_concentration": 0.4,
+                    "is_fresh": False,
+                    "first_trade": "2025-01-01 08:00:00",
+                    "score": 0.201,
+                },
+            ],
+            "cusum": {
+                "direction": "up",
+                "statistic": 6.42,
+                "threshold": 5.0,
+            },
+        },
+    )
+    output = format_md(report)
+    assert "### Wallet Evidence" in output
+    assert "0x1111...aaaa" in output
+    assert "75.0%" in output
+    assert "0x2222...bbbb" in output
+    assert "19.0%" in output
+    assert "Change-point" in output
+    assert "up" in output
+    assert "6.420" in output
+
+
+def test_markdown_format_no_regression_without_phase2_keys():
+    """Golden captured from the pre-Phase-2-CLI ``human_formatter`` source
+    (git show HEAD:src/prediction_market/reporting/human_formatter.py at the
+    commit preceding this change) before any edits were made in this
+    session. Reports without ``wallet_evidence``/``cusum`` in ``details``
+    must render byte-identically to this literal.
+    """
+    report = AnomalyReport(
+        id="rpt-001",
+        agent="info_leak",
+        market_id="test-market-1",
+        market_question="Will the bill pass?",
+        severity="high",
+        anomaly_score=5.5,
+        confidence=0.85,
+        summary="Unusual price spike detected.",
+        details={"price_z": 3.2, "volume_z": 2.8},
+        price_evidence={"before": 0.55, "after": 0.72},
+        volume_evidence={"volume_24h": 150000},
+        calendar_matches=[
+            {"source": "congress", "title": "Committee vote", "date": "2026-02-21"}
+        ],
+        news_check={"news_found": False},
+        created_at=datetime(2026, 2, 20, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    golden = (
+        '# Anomaly Report [HIGH] (!!)\n\n**ID:** `rpt-001`  \n**Agent:** info_leak  \n'
+        '**Created:** 2026-02-20 12:00:00 UTC  \n\n## Market\n\n'
+        '- **Market ID:** `test-market-1`\n- **Question:** Will the bill pass?\n\n'
+        '## Assessment\n\n- **Severity:** HIGH\n- **Anomaly Score:** 5.500\n'
+        '- **Confidence:** 85.0% -- High (> 0.75)\n\n## Summary\n\n'
+        'Unusual price spike detected.\n\n### Price Evidence\n\n- **before**: 0.55\n'
+        '- **after**: 0.72\n\n### Volume Evidence\n\n- **volume_24h**: 150000\n\n'
+        '### Calendar Matches\n\n| Source | Event | Date | Relevance |\n'
+        '|--------|-------|------|-----------|\n'
+        '| congress | Committee vote | 2026-02-21 | N/A |\n\n'
+        '### News Cross-Reference\n\n- **news_found**: False\n\n### Details\n\n'
+        '<details>\n<summary>Full payload (click to expand)</summary>\n\n'
+        '```json\n{\n  "price_z": 3.2,\n  "volume_z": 2.8\n}\n```\n\n</details>\n\n'
+        '---\n\n*High-confidence alert. Evidence strongly suggests anomalous '
+        'activity. Recommend immediate review.*\n'
+    )
+
+    assert format_md(report) == golden
+
+
 def test_markdown_format_low_confidence_note():
     report = AnomalyReport(
         id="rpt-low",

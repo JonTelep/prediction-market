@@ -261,6 +261,170 @@ def markets(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# wallets
+# ---------------------------------------------------------------------------
+
+
+def _abbreviate_wallet(wallet: str) -> str:
+    """Abbreviate a wallet address as ``0x1234...abcd`` for compact display."""
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:6]}...{wallet[-4:]}"
+
+
+@main.command("wallets")
+@click.argument("market_id")
+@click.option(
+    "--hours",
+    type=int,
+    default=168,
+    show_default=True,
+    help="Size of the trailing trading window to profile, in hours.",
+)
+@click.pass_context
+def wallets_cmd(ctx: click.Context, market_id: str, hours: int) -> None:
+    """Rank a market's wallets by Phase-2 anomaly-profiler score.
+
+    Reads wallet-attributed trades from the local database (no live API
+    calls), summarizes them with ``get_market_wallet_summary``, and scores
+    each wallet with ``profile_wallets``. Trades ingested before Phase 2
+    have no ``proxy_wallet`` and are therefore excluded from this view.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from datetime import datetime, timedelta, timezone
+
+    from prediction_market.analysis.wallet_profiler import profile_wallets
+    from prediction_market.store.database import get_database
+    from prediction_market.store.queries import get_market_wallet_summary
+
+    now = datetime.now(timezone.utc)
+    end = now.strftime("%Y-%m-%d %H:%M:%S")
+    start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def _query() -> list[dict[str, Any]]:
+        db = await get_database(config)
+        try:
+            return await get_market_wallet_summary(db, market_id, start, end)
+        finally:
+            await db.close()
+
+    summaries = _run_async(_query())
+
+    if not summaries:
+        click.echo(
+            f"No wallet-attributed trades for market {market_id!r} in the last "
+            f"{hours}h. Trades ingested before Phase 2 lack wallet attribution."
+        )
+        return
+
+    features = profile_wallets(summaries, window_end=end, thresholds=config.thresholds)
+
+    if not features:
+        click.echo(
+            f"No wallets met the minimum-volume threshold for market {market_id!r} "
+            f"in the last {hours}h."
+        )
+        return
+
+    click.echo(
+        f"\n{'Wallet':<20} {'Trades':>7} {'Volume USD':>14} {'Share':>7} "
+        f"{'Concentration':>13} {'Fresh':>6} {'Score':>7}"
+    )
+    click.echo("-" * 90)
+
+    for f in features:
+        addr = _abbreviate_wallet(f.wallet)
+        vol = f"${f.total_volume_usd:,.0f}"
+        share = f"{f.volume_share:.1%}"
+        conc = f"{f.directional_concentration:.2f}"
+        fresh = "yes" if f.is_fresh else "no"
+        score = f"{f.score:.3f}"
+        click.echo(
+            f"{addr:<20} {f.trade_count:>7} {vol:>14} {share:>7} "
+            f"{conc:>13} {fresh:>6} {score:>7}"
+        )
+
+    click.echo(f"\nTotal: {len(features)} wallet(s) scored")
+
+
+# ---------------------------------------------------------------------------
+# wallet
+# ---------------------------------------------------------------------------
+
+
+@main.command("wallet")
+@click.argument("address")
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Maximum number of trades to display.",
+)
+@click.pass_context
+def wallet_cmd(ctx: click.Context, address: str, limit: int) -> None:
+    """Show one wallet's cross-market trade history from the local DB.
+
+    This is a local-DB view only (``get_wallet_trades``): it never calls
+    the live Data API. For an address's *current* on-chain positions or
+    activity, use the Data API's ``get_wallet_positions``/
+    ``get_wallet_activity`` helpers directly -- those are reserved for the
+    live validation session and Phase 3 investigations, not this command.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.store.database import get_database
+    from prediction_market.store.queries import get_wallet_trades
+
+    async def _query() -> list[dict[str, Any]]:
+        db = await get_database(config)
+        try:
+            return await get_wallet_trades(db, address, limit=limit)
+        finally:
+            await db.close()
+
+    rows = _run_async(_query())
+
+    if not rows:
+        click.echo(f"No trades found for wallet {address!r} in the local database.")
+        return
+
+    click.echo(
+        f"\n{'Match Time':<20} {'Market':<24} {'Side':<5} {'Outcome':<8} "
+        f"{'Price':>7} {'Volume USD':>12}"
+    )
+    click.echo("-" * 90)
+
+    total_volume = 0.0
+    buy_volume = 0.0
+    sell_volume = 0.0
+
+    for r in rows:
+        ts = str(r["match_time"])[:19]
+        market = str(r["market_id"])[:22]
+        side = str(r["side"])
+        outcome = str(r["outcome"])[:8]
+        price = f"{float(r['price']):.4f}" if r["price"] is not None else "N/A"
+        vol = float(r["volume_usd"] or 0.0)
+        total_volume += vol
+        if side.upper() == "BUY":
+            buy_volume += vol
+        elif side.upper() == "SELL":
+            sell_volume += vol
+        click.echo(
+            f"{ts:<20} {market:<24} {side:<5} {outcome:<8} {price:>7} ${vol:>10,.2f}"
+        )
+
+    click.echo(
+        f"\nTotal: {len(rows)} trade(s), volume ${total_volume:,.2f} "
+        f"(buy ${buy_volume:,.2f} / sell ${sell_volume:,.2f})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # reports
 # ---------------------------------------------------------------------------
 
