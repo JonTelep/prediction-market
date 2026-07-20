@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -313,6 +313,13 @@ class Trade(BaseModel):
     def match_datetime(self) -> datetime | None:
         if not self.match_time:
             return None
+        # Live /trades serves epoch-seconds timestamps (all-digits after
+        # the numeric coercion above); fixtures use ISO-8601.
+        if self.match_time.isdigit():
+            try:
+                return datetime.fromtimestamp(int(self.match_time), tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return None
         try:
             return datetime.fromisoformat(self.match_time.replace("Z", "+00:00"))
         except ValueError:

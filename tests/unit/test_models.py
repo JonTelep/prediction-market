@@ -311,3 +311,15 @@ class TestTradeLiveSchema:
         assert "matchTime" in dumped
         assert "assetId" in dumped
         assert "market" in dumped
+
+
+class TestMatchDatetimeEpoch:
+    def test_epoch_match_time_parses(self):
+        t = Trade.model_validate({"id": "t1", "matchTime": 1767442419})
+        dt = t.match_datetime
+        assert dt is not None
+        assert dt.strftime("%Y-%m-%d %H:%M:%S") == "2026-01-03 12:13:39"
+
+    def test_iso_match_time_still_parses(self):
+        t = Trade.model_validate({"id": "t1", "matchTime": "2026-01-03T12:13:39Z"})
+        assert t.match_datetime is not None
