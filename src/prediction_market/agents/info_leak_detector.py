@@ -37,8 +37,10 @@ from typing import Any
 import aiosqlite
 
 from prediction_market.agents.base import BaseAgent
+from prediction_market.analysis.changepoint import CusumAlarm, CusumDetector
 from prediction_market.analysis.price_analyzer import PriceAnalyzer
 from prediction_market.analysis.volume_analyzer import VolumeAnalyzer
+from prediction_market.analysis.wallet_profiler import WalletFeatures, profile_wallets
 from prediction_market.config import AppConfig
 from prediction_market.data.external.news_checker import NewsChecker
 from prediction_market.reporting.anomaly_report import AnomalyReport
@@ -129,6 +131,7 @@ class InfoLeakDetector(BaseAgent):
         super().__init__(config, db, sinks)
         self._price_analyzer = PriceAnalyzer(config.thresholds)
         self._volume_analyzer = VolumeAnalyzer(config.thresholds)
+        self._cusum = CusumDetector(config.thresholds)
         self._news_checker = news_checker or NewsChecker(config)
 
         # In-memory only — see module docstring.
@@ -192,6 +195,14 @@ class InfoLeakDetector(BaseAgent):
         # --- Price: always update -------------------------------------
         self._price_analyzer.update(market_id, price, ts)
 
+        # CUSUM must be updated and checked unconditionally, exactly once
+        # per market per tick, BEFORE the trigger gate below. check_alarm
+        # resets its accumulated statistics on fire; gating this on the
+        # z-trigger would let a stale excursion sit accumulated until an
+        # unrelated marginal trigger read it.
+        self._cusum.update(market_id, price, ts)
+        alarm: CusumAlarm | None = self._cusum.check_alarm(market_id)
+
         price_z = self._price_analyzer.current_z_score(market_id) or 0.0
         vol_z = self._volume_analyzer.current_z_score(market_id) or 0.0
 
@@ -234,6 +245,16 @@ class InfoLeakDetector(BaseAgent):
                 f"{len(news_result.articles)} article(s) found)"
             )
 
+        # --- CUSUM amplifier -------------------------------------------
+        # Corroborating amplifier only, applied after the news dampener so
+        # it multiplies the net evidence, not the raw score.
+        if alarm is not None:
+            combined *= thresholds.cusum_amplifier
+            amplifiers_applied.append(
+                f"cusum_alarm(x{thresholds.cusum_amplifier}, "
+                f"direction={alarm.direction}, statistic={alarm.statistic:.2f})"
+            )
+
         # --- Thin-liquidity annotation (informational only) ----------------
         ob_snap = await queries.get_latest_orderbook_snapshot(self.db, market_id)
         thin_liquidity = (
@@ -252,6 +273,20 @@ class InfoLeakDetector(BaseAgent):
 
         self._last_alert[market_id] = ts
 
+        # --- Wallet corroboration — only past the gate, anchored to the
+        # snapshot timestamp (never wall-clock; the replay harness drives
+        # this over historical time). Soft-fail: an empty trades table
+        # yields no wallet evidence, never an exception.
+        window_end_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+        window_start = ts - timedelta(hours=thresholds.wallet_lookback_hours)
+        window_start_str = window_start.strftime("%Y-%m-%d %H:%M:%S")
+        summaries = await queries.get_market_wallet_summary(
+            self.db, market_id, window_start_str, window_end_str
+        )
+        wallet_features = profile_wallets(
+            summaries, window_end=window_end_str, thresholds=thresholds
+        )
+
         await self._emit_report(
             market_id=market_id,
             question=question,
@@ -268,6 +303,8 @@ class InfoLeakDetector(BaseAgent):
             calendar_matches=calendar_matches,
             news_result=news_result,
             thin_liquidity=thin_liquidity,
+            wallet_features=wallet_features,
+            cusum_alarm=alarm,
         )
 
     # -- Reporting --------------------------------------------------------
@@ -290,9 +327,11 @@ class InfoLeakDetector(BaseAgent):
         calendar_matches: list[dict[str, Any]],
         news_result: Any,
         thin_liquidity: bool,
+        wallet_features: list[WalletFeatures],
+        cusum_alarm: CusumAlarm | None,
     ) -> None:
+        thresholds = self.config.thresholds
         confidence = self._score_to_confidence(combined)
-        severity = AnomalyReport.severity_from_score(confidence)
 
         triggers: list[str] = []
         if price_triggered:
@@ -305,6 +344,19 @@ class InfoLeakDetector(BaseAgent):
             f'Potential info leak detected in "{question}": combined anomaly '
             f"score {combined:.2f} (triggered by {trigger_desc} movement)."
         )
+
+        # --- Wallet confidence bump — before severity is derived, so
+        # severity and confidence stay consistent.
+        if wallet_features and wallet_features[0].score >= thresholds.wallet_score_min:
+            confidence = min(1.0, confidence + 0.10)
+            top_wallet = wallet_features[0]
+            summary += (
+                f" Wallet {top_wallet.wallet} corroborates with "
+                f"{top_wallet.volume_share:.0%} of window volume "
+                f"(score {top_wallet.score:.2f})."
+            )
+
+        severity = AnomalyReport.severity_from_score(confidence)
 
         price_anomaly = self._price_analyzer.check_anomaly(market_id)
         if price_anomaly is not None:
@@ -347,6 +399,23 @@ class InfoLeakDetector(BaseAgent):
             "amplifiers_applied": amplifiers_applied,
             "dampeners_applied": dampeners_applied,
             "thin_liquidity": thin_liquidity,
+            "wallet_evidence": [
+                f.to_dict() for f in wallet_features[: thresholds.wallet_top_k]
+            ],
+            "cusum": (
+                {
+                    "direction": cusum_alarm.direction,
+                    "statistic": cusum_alarm.statistic,
+                    "threshold": cusum_alarm.threshold,
+                }
+                if cusum_alarm is not None
+                else None
+            ),
+            # The historical time this report is *about* — AnomalyReport
+            # .created_at below is wall-clock emission time and the two
+            # diverge by construction under replay. Downstream consumers
+            # needing "when did this anomaly happen" read this key.
+            "snapshot_timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
         report = AnomalyReport(

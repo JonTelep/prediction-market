@@ -8,6 +8,7 @@ it, never delete it.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -49,7 +50,7 @@ async def _insert_snapshot(
 
 async def _report_rows(db, agent: str) -> list[tuple]:
     cursor = await db.execute(
-        "SELECT agent, market_id FROM anomaly_reports WHERE agent = ?",
+        "SELECT agent, market_id, details FROM anomaly_reports WHERE agent = ?",
         (agent,),
     )
     return await cursor.fetchall()
@@ -166,6 +167,15 @@ async def test_info_leak_pipeline_emits_report(app_config):
         rows = await _report_rows(db, "info_leak")
         assert len(rows) == 1
         assert rows[0][1] == "pipeline-market-1"
+
+        # Additive (Prompt 5): the CUSUM/wallet corroboration wiring must
+        # attach these keys without changing the emission behavior above --
+        # an empty trades table (this test never seeds one) soft-fails to
+        # empty wallet evidence, never an exception or a skipped report.
+        details = json.loads(rows[0][2])
+        assert details["wallet_evidence"] == []
+        assert "cusum" in details
+        assert "snapshot_timestamp" in details
     finally:
         await orch.stop()
 
