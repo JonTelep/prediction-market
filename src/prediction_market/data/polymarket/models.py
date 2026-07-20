@@ -241,6 +241,30 @@ class Trade(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator(
+        "size", "price", "fee_rate_bps", "bucket_index", "match_time", mode="before"
+    )
+    @classmethod
+    def _coerce_numeric_to_str(cls, v: Any) -> Any:
+        """Accept JSON numbers for the string-typed fields.
+
+        Live-API finding (2026-07-20 validation session): the Data API
+        serves ``size``/``price`` as JSON numbers, not the strings this
+        repo's fixtures assumed. ``match_time`` can likewise arrive as an
+        epoch number; the store's write-time normalization already handles
+        the all-digits string form.
+        """
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, float):
+            # str() is lossless (repr round-trips); integral floats drop
+            # the trailing ".0" so epoch timestamps stay all-digits for
+            # the store's normalization.
+            return str(int(v)) if v.is_integer() else str(v)
+        if isinstance(v, int):
+            return str(v)
+        return v
+
     @property
     def price_float(self) -> float:
         return float(self.price) if self.price else 0.0

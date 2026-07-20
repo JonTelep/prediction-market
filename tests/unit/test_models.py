@@ -237,3 +237,28 @@ class TestWalletActivity:
         assert len(activities) == 4
         types = {a.type for a in activities}
         assert types == {"TRADE", "REDEEM"}
+
+
+class TestTradeNumericCoercion:
+    """Live-API finding (2026-07-20): the Data API serves size/price as
+    JSON numbers, not the strings the fixtures assumed."""
+
+    def test_numeric_size_and_price_coerced_losslessly(self):
+        t = Trade.model_validate(
+            {"id": "t1", "size": 174.7, "price": 0.2862049227, "matchTime": "2026-01-01T00:00:00Z"}
+        )
+        assert t.size == "174.7"
+        assert t.price == "0.2862049227"
+        assert t.price_float == pytest.approx(0.2862049227)
+        assert t.volume_usd == pytest.approx(174.7 * 0.2862049227)
+
+    def test_epoch_number_match_time_stays_all_digits(self):
+        t = Trade.model_validate({"id": "t1", "matchTime": 1735689600})
+        assert t.match_time == "1735689600"
+        t2 = Trade.model_validate({"id": "t2", "matchTime": 1735689600.0})
+        assert t2.match_time == "1735689600"
+
+    def test_string_inputs_unchanged(self):
+        t = Trade.model_validate({"id": "t1", "size": "100", "price": "0.65"})
+        assert t.size == "100"
+        assert t.price == "0.65"
