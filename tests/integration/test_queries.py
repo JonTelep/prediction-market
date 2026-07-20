@@ -13,12 +13,14 @@ from prediction_market.store.queries import (
     get_latest_orderbook_snapshot,
     get_latest_snapshot,
     get_market_trades,
+    get_market_wallet_summary,
     get_price_history,
     get_recent_orderbooks,
     get_recent_snapshots,
     get_rolling_stats,
     get_scheduled_events_in_range,
     get_volume_history,
+    get_wallet_trades,
     save_anomaly_report,
     save_rolling_stats,
     save_scheduled_events,
@@ -91,6 +93,26 @@ async def _insert_trades(db, market_id, count):
     await db.commit()
 
 
+async def _insert_trade(
+    db,
+    trade_id,
+    market_id,
+    match_time,
+    proxy_wallet,
+    side="BUY",
+    size=100,
+    price=0.65,
+):
+    volume_usd = size * price
+    await db.execute(
+        "INSERT INTO trades (id, market_id, asset_id, side, size, price, volume_usd, "
+        "outcome, owner, proxy_wallet, match_time) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (trade_id, market_id, "tok1", side, size, price, volume_usd, "Yes", "", proxy_wallet, match_time),
+    )
+    await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_get_recent_snapshots(db):
     await _insert_snapshots(db, "q-market-1", 5)
@@ -138,6 +160,111 @@ async def test_get_market_trades(db):
     rows = await get_market_trades(db, "q-market-1", hours=48)
     assert len(rows) == 6
     assert rows[0]["side"] == "BUY"
+    assert "proxy_wallet" in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades(db):
+    await _insert_trade(db, "wt-1", "q-market-1", "2026-02-20 10:00:00", "0xwalletA")
+    await _insert_trade(db, "wt-2", "q-market-1", "2026-02-20 11:00:00", "0xwalletA")
+    await _insert_trade(db, "wt-3", "q-market-1", "2026-02-20 12:00:00", "0xwalletB")
+
+    rows = await get_wallet_trades(db, "0xwalletA")
+    assert len(rows) == 2
+    assert all(r["proxy_wallet"] == "0xwalletA" for r in rows)
+    # Ordered by match_time descending
+    assert rows[0]["id"] == "wt-2"
+    assert rows[1]["id"] == "wt-1"
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades_limit(db):
+    for i in range(5):
+        await _insert_trade(db, f"wtl-{i}", "q-market-1", f"2026-02-20 10:0{i}:00", "0xwalletC")
+
+    rows = await get_wallet_trades(db, "0xwalletC", limit=2)
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades_unknown_wallet(db):
+    rows = await get_wallet_trades(db, "0xnobody")
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_boundary_inclusive(db):
+    start = "2026-02-20 10:00:00"
+    end = "2026-02-20 11:00:00"
+
+    await _insert_trade(db, "b-at-start", "q-market-1", start, "0xwalletBoundary")
+    await _insert_trade(db, "b-at-end", "q-market-1", end, "0xwalletBoundary")
+    await _insert_trade(db, "b-before", "q-market-1", "2026-02-20 09:59:59", "0xwalletBoundary")
+    await _insert_trade(db, "b-after", "q-market-1", "2026-02-20 11:00:01", "0xwalletBoundary")
+
+    rows = await get_market_wallet_summary(db, "q-market-1", start, end)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["proxy_wallet"] == "0xwalletBoundary"
+    # Only the two boundary-inclusive trades counted; the one-second-outside
+    # trades on each side must be excluded.
+    assert row["trade_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_aggregates_and_fresh_wallet(db):
+    start = "2026-02-20 10:00:00"
+    end = "2026-02-20 12:00:00"
+
+    # An older trade for wallet D, outside the query window, proves
+    # first_trade reflects the wallet's entire history, not just the window.
+    await _insert_trade(
+        db, "old-d", "q-market-1", "2026-01-01 00:00:00", "0xwalletD",
+        side="BUY", size=10, price=0.5,
+    )
+    await _insert_trade(
+        db, "d1", "q-market-1", "2026-02-20 10:15:00", "0xwalletD",
+        side="BUY", size=100, price=0.6,
+    )
+    await _insert_trade(
+        db, "d2", "q-market-1", "2026-02-20 10:30:00", "0xwalletD",
+        side="SELL", size=50, price=0.6,
+    )
+    # A second wallet in the window with lower total volume.
+    await _insert_trade(
+        db, "e1", "q-market-1", "2026-02-20 10:20:00", "0xwalletE",
+        side="BUY", size=10, price=0.6,
+    )
+    # A trade with no wallet attribution must be excluded entirely.
+    await _insert_trade(db, "noattr", "q-market-1", "2026-02-20 10:25:00", "")
+
+    rows = await get_market_wallet_summary(db, "q-market-1", start, end)
+    by_wallet = {r["proxy_wallet"]: r for r in rows}
+
+    assert set(by_wallet.keys()) == {"0xwalletD", "0xwalletE"}
+
+    d = by_wallet["0xwalletD"]
+    assert d["trade_count"] == 2  # window trades only, not the old one
+    assert d["total_volume_usd"] == pytest.approx(100 * 0.6 + 50 * 0.6)
+    assert d["buy_volume_usd"] == pytest.approx(100 * 0.6)
+    # first_trade reaches back to the out-of-window trade.
+    assert d["first_trade"] == "2026-01-01 00:00:00"
+    assert d["last_trade"] == "2026-02-20 10:30:00"
+
+    e = by_wallet["0xwalletE"]
+    assert e["trade_count"] == 1
+    assert e["total_volume_usd"] == pytest.approx(10 * 0.6)
+
+    # Highest total_volume_usd first.
+    assert rows[0]["proxy_wallet"] == "0xwalletD"
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_empty(db):
+    rows = await get_market_wallet_summary(
+        db, "q-market-1", "2026-02-20 10:00:00", "2026-02-20 11:00:00"
+    )
+    assert rows == []
 
 
 @pytest.mark.asyncio

@@ -307,12 +307,91 @@ async def get_market_trades(
         db,
         """
         SELECT id, market_id, asset_id, side, size, price,
-               volume_usd, outcome, owner, match_time, transaction_hash
+               volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
         FROM trades
         WHERE market_id = ? AND match_time >= ?
         ORDER BY match_time ASC
         """,
         (market_id, cutoff),
+    )
+
+
+async def get_wallet_trades(
+    db: aiosqlite.Connection,
+    wallet: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Get recent trades made by a specific wallet, across all markets.
+
+    Args:
+        db: An open aiosqlite connection.
+        wallet: The proxy wallet address to query.
+        limit: Maximum number of trades to return.
+
+    Returns:
+        List of trade dicts ordered by match_time descending.
+    """
+    return await _fetch_all_dicts(
+        db,
+        """
+        SELECT id, market_id, asset_id, side, size, price,
+               volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
+        FROM trades
+        WHERE proxy_wallet = ?
+        ORDER BY match_time DESC
+        LIMIT ?
+        """,
+        (wallet, limit),
+    )
+
+
+async def get_market_wallet_summary(
+    db: aiosqlite.Connection,
+    market_id: str,
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
+    """Summarize per-wallet trading activity for a market within a time window.
+
+    Args:
+        db: An open aiosqlite connection.
+        market_id: The market to query.
+        start: Window start as a "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp
+            (inclusive). Explicit rather than wall-clock `hours` so this
+            works identically in live mode and in historical replay.
+        end: Window end as a "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp
+            (inclusive).
+
+    Returns:
+        One row per wallet with proxy_wallet, trade_count,
+        total_volume_usd, buy_volume_usd, first_trade (earliest match_time
+        for that wallet across its entire trade history, not just this
+        window -- the "fresh wallet" signal), and last_trade (latest
+        match_time within the window). Wallets with an empty proxy_wallet
+        are excluded. Ordered by total_volume_usd descending.
+    """
+    return await _fetch_all_dicts(
+        db,
+        """
+        SELECT
+            t.proxy_wallet AS proxy_wallet,
+            COUNT(*) AS trade_count,
+            SUM(t.volume_usd) AS total_volume_usd,
+            SUM(CASE WHEN t.side = 'BUY' THEN t.volume_usd ELSE 0 END) AS buy_volume_usd,
+            (
+                SELECT MIN(w.match_time)
+                FROM trades w
+                WHERE w.proxy_wallet = t.proxy_wallet
+            ) AS first_trade,
+            MAX(t.match_time) AS last_trade
+        FROM trades t
+        WHERE t.market_id = ?
+          AND t.match_time >= ? AND t.match_time <= ?
+          AND t.proxy_wallet != ''
+        GROUP BY t.proxy_wallet
+        ORDER BY total_volume_usd DESC
+        """,
+        (market_id, start, end),
     )
 
 

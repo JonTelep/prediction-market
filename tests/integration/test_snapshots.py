@@ -1,5 +1,7 @@
 """Integration tests for snapshot writers against real SQLite."""
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 
@@ -7,6 +9,7 @@ from prediction_market.config import load_config
 from prediction_market.data.polymarket.models import GammaMarket, OrderBook, OrderBookEntry, Trade
 from prediction_market.store.database import init_database
 from prediction_market.store.snapshots import (
+    _normalize_match_time,
     save_market,
     save_orderbook_snapshot,
     save_price_snapshot,
@@ -79,6 +82,7 @@ def sample_trades():
             matchTime="2026-02-20T10:00:00Z",
             outcome="Yes",
             owner=f"0xowner{i}",
+            proxyWallet=f"0xwallet{i}",
             transactionHash=f"0xtx{i}",
         )
         for i in range(5)
@@ -198,3 +202,65 @@ async def test_save_trades_batch(db, sample_market, sample_trades):
 async def test_save_trades_batch_empty(db):
     result = await save_trades_batch(db, [], "m1")
     assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_save_trade_normalizes_match_time_and_stores_wallet(db, sample_market):
+    await save_market(db, sample_market)
+    trade = Trade(
+        id="trade-norm-1",
+        market="snap-market-1",
+        assetId="tok-yes",
+        side="BUY",
+        size="100",
+        price="0.65",
+        matchTime="2026-02-20T10:00:00Z",
+        outcome="Yes",
+        owner="0xowner0",
+        proxyWallet="0xwalletnorm",
+        transactionHash="0xtxnorm",
+    )
+    await save_trade(db, trade, "snap-market-1")
+
+    cursor = await db.execute(
+        "SELECT match_time, proxy_wallet FROM trades WHERE id = ?",
+        ("trade-norm-1",),
+    )
+    row = await cursor.fetchone()
+    assert row[0] == "2026-02-20 10:00:00"
+    assert row[1] == "0xwalletnorm"
+
+
+@pytest.mark.asyncio
+async def test_save_trades_batch_normalizes_match_time_and_wallets(db, sample_market, sample_trades):
+    await save_market(db, sample_market)
+    await save_trades_batch(db, sample_trades, "snap-market-1")
+
+    cursor = await db.execute(
+        "SELECT id, match_time, proxy_wallet FROM trades WHERE market_id = ? ORDER BY id",
+        ("snap-market-1",),
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 5
+    for row in rows:
+        assert row[1] == "2026-02-20 10:00:00"
+    wallets = {row[2] for row in rows}
+    assert wallets == {f"0xwallet{i}" for i in range(5)}
+
+
+class TestNormalizeMatchTime:
+    def test_iso8601_z_suffix(self):
+        assert _normalize_match_time("2026-02-20T10:00:00Z") == "2026-02-20 10:00:00"
+
+    def test_epoch_seconds_string(self):
+        # 2026-02-20T10:00:00Z as epoch seconds
+        epoch = int(
+            datetime(2026, 2, 20, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        )
+        assert _normalize_match_time(str(epoch)) == "2026-02-20 10:00:00"
+
+    def test_garbage_input_returned_unchanged(self):
+        assert _normalize_match_time("not-a-timestamp") == "not-a-timestamp"
+
+    def test_empty_string_returned_unchanged(self):
+        assert _normalize_match_time("") == ""

@@ -236,6 +236,7 @@ class Trade(BaseModel):
     outcome: str = ""
     bucket_index: str = Field("", alias="bucketIndex")
     owner: str = ""
+    proxy_wallet: str = Field("", alias="proxyWallet")
     transaction_hash: str = Field("", alias="transactionHash")
 
     model_config = {"populate_by_name": True}

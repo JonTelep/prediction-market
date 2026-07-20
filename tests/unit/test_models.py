@@ -120,3 +120,38 @@ class TestTrade:
         assert t.size_float == 100.0
         assert t.volume_usd == 65.0
         assert t.match_datetime is not None
+
+    def test_proxy_wallet_populated_from_alias(self):
+        t = Trade.model_validate(
+            {
+                "id": "trade-1",
+                "price": "0.65",
+                "size": "100",
+                "matchTime": "2026-01-15T10:30:00Z",
+                "proxyWallet": "0xwallet1",
+            }
+        )
+        assert t.proxy_wallet == "0xwallet1"
+
+    def test_proxy_wallet_defaults_empty_without_key(self):
+        t = Trade.model_validate(
+            {
+                "id": "trade-1",
+                "price": "0.65",
+                "size": "100",
+                "matchTime": "2026-01-15T10:30:00Z",
+            }
+        )
+        assert t.proxy_wallet == ""
+
+    def test_proxy_wallet_from_fixture_record(self):
+        import json
+        from pathlib import Path
+
+        fixtures = Path(__file__).resolve().parent.parent / "fixtures" / "trades.json"
+        records = json.loads(fixtures.read_text())
+        trades = [Trade.model_validate(r) for r in records]
+        assert trades[0].proxy_wallet == "0xwallet1"
+        assert trades[1].proxy_wallet == "0xwallet2"
+        # owner remains a distinct field, not an alias for proxy_wallet
+        assert trades[0].owner == "0xowner1"
