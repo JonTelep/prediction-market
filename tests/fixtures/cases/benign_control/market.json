@@ -1,0 +1,35 @@
+{
+  "id": "benign-control-1",
+  "question": "Will the committee vote favorably at the scheduled session?",
+  "description": "Resolves based on the outcome announced at 2026-01-14 00:00:00.",
+  "outcomes": [
+    "Yes",
+    "No"
+  ],
+  "outcomePrices": [
+    "0.15",
+    "0.85"
+  ],
+  "volume": 200000.0,
+  "volume24hr": 20000.0,
+  "liquidity": 50000.0,
+  "active": true,
+  "closed": false,
+  "archived": true,
+  "createdAt": "2026-01-05T00:00:00Z",
+  "endDate": "2026-01-16T00:00:00Z",
+  "tags": [
+    {
+      "label": "Politics"
+    }
+  ],
+  "slug": "benign-control-validation",
+  "category": "politics",
+  "conditionId": "0xbenigncontrol1",
+  "clobTokenIds": [
+    "token-yes",
+    "token-no"
+  ],
+  "rewards": null,
+  "enableOrderBook": true
+}
