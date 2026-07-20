@@ -7,6 +7,7 @@ surveillance system:
 - **volume_analyzer** -- Volume spike anomaly detection.
 - **price_analyzer** -- Price move anomaly detection.
 - **correlation** -- Cross-market correlation detection.
+- **wallet_profiler** -- Per-wallet anomaly feature extraction (Phase 2).
 
 Order-book depth and holder concentration analysis (susceptibility
 scoring) lives in ``agents.manipulation_guard.LiquidityAnalyzer`` -- the
@@ -17,6 +18,7 @@ from prediction_market.analysis.correlation import CorrelatedMove, CorrelationDe
 from prediction_market.analysis.price_analyzer import PriceAnalyzer, PriceAnomaly
 from prediction_market.analysis.timeseries import EWMA, RollingStats, compute_z_score
 from prediction_market.analysis.volume_analyzer import VolumeAnalyzer, VolumeAnomaly
+from prediction_market.analysis.wallet_profiler import WalletFeatures, profile_wallets
 
 __all__ = [
     "EWMA",
@@ -27,5 +29,7 @@ __all__ = [
     "RollingStats",
     "VolumeAnalyzer",
     "VolumeAnomaly",
+    "WalletFeatures",
     "compute_z_score",
+    "profile_wallets",
 ]
