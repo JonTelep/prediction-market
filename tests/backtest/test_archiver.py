@@ -304,9 +304,13 @@ async def test_archive_case_price_history_range_retry_on_empty_interval(
     serves the data. The archiver must retry with the market's date range."""
     _mock_gamma(gamma_market_record, config.apis.gamma_base_url)
     ph_route = respx.get(f"{config.apis.clob_base_url}/prices-history")
+    # Interval query comes back empty; the retry walks the market's
+    # lifetime (Jan 1 - Mar 31 fixture dates, padded a day each side =
+    # 92 days) in 14-day chunks = 7 ranged calls, one of which serves data.
     ph_route.side_effect = [
         httpx.Response(200, json={"history": []}),        # interval query
-        httpx.Response(200, json=price_history_data),      # ranged retry
+        httpx.Response(200, json=price_history_data),      # chunk 1
+        *[httpx.Response(200, json={"history": []}) for _ in range(6)],
     ]
     respx.get(f"{config.apis.data_base_url}/trades").mock(
         return_value=httpx.Response(200, json=[])
@@ -314,12 +318,15 @@ async def test_archive_case_price_history_range_retry_on_empty_interval(
 
     case_dir = await archive_case(config, SLUG, tmp_path / "cases")
 
-    assert len(ph_route.calls) == 2
+    assert len(ph_route.calls) == 8
     first = ph_route.calls[0].request.url.params
-    second = ph_route.calls[1].request.url.params
     assert "startTs" not in first
-    assert "startTs" in second and "endTs" in second
-    assert second["fidelity"] == "60"
+    for call in ph_route.calls[1:]:
+        params = call.request.url.params
+        assert "startTs" in params and "endTs" in params
+        assert params["fidelity"] == "60"
+        span = int(params["endTs"]) - int(params["startTs"])
+        assert span <= 14 * 86400
 
     case = load_case(case_dir)
     assert len(case.snapshots) == 3
