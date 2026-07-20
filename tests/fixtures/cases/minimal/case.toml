@@ -1,0 +1,12 @@
+[case]
+slug = "minimal"
+market_id = "minimal-market-1"
+condition_id = "0xminimalcond1"
+question = "Will the nominee be confirmed by the Senate before July 2026?"
+archived_at = "2026-06-05 00:00:00"
+notes = "Hand-built fixture: 24 quiet hourly snapshots, then a sustained price jump (0.50 -> 0.72) with a volume spike at hour 24. Two wallets, one scheduled event near the jump."
+
+[label]
+window_start = "2026-06-01 23:00:00"
+window_end = "2026-06-02 02:00:00"
+event_time = "2026-06-02 01:00:00"

@@ -134,6 +134,8 @@ async def save_price_snapshot(
     volume_24hr: float | None = None,
     volume_total: float | None = None,
     liquidity: float | None = None,
+    *,
+    timestamp: str | None = None,
 ) -> None:
     """Save a point-in-time price/volume snapshot for a market.
 
@@ -145,8 +147,13 @@ async def save_price_snapshot(
         volume_24hr: Trading volume in the last 24 hours (USD).
         volume_total: All-time total trading volume (USD).
         liquidity: Current liquidity available (USD).
+        timestamp: Explicit "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp for this
+            snapshot. Defaults to the current time (``_utcnow()``) --
+            existing live call sites are unaffected. The backtest replay
+            engine passes historical timestamps here so point-in-time
+            replay does not depend on wall-clock time.
     """
-    now = _utcnow()
+    now = timestamp if timestamp is not None else _utcnow()
 
     await db.execute(
         """
