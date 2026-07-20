@@ -8,7 +8,13 @@ from typing import Any
 import httpx
 
 from prediction_market.config import AppConfig
-from prediction_market.data.polymarket.models import MarketHolder, OpenInterest, Trade
+from prediction_market.data.polymarket.models import (
+    MarketHolder,
+    OpenInterest,
+    Trade,
+    WalletActivity,
+    WalletPosition,
+)
 from prediction_market.data.polymarket.rate_limiter import TokenBucketRateLimiter
 from prediction_market.data.retry import get_with_retry
 
@@ -50,6 +56,9 @@ class DataClient:
         condition_id: str | None = None,
         limit: int = 100,
         cursor: str | None = None,
+        *,
+        user: str | None = None,
+        taker_only: bool = False,
     ) -> list[Trade]:
         """Fetch trades for a market or condition.
 
@@ -60,6 +69,8 @@ class DataClient:
             condition_id: The condition ID to filter by.
             limit: Maximum number of trades to return per page.
             cursor: Pagination cursor from a previous response.
+            user: A proxy-wallet address to filter trades to a single wallet.
+            taker_only: When True, restrict to trades where the wallet was the taker.
 
         Returns:
             List of Trade objects, newest first.
@@ -71,6 +82,10 @@ class DataClient:
             params["condition_id"] = condition_id
         if cursor is not None:
             params["cursor"] = cursor
+        if user is not None:
+            params["user"] = user
+        if taker_only:
+            params["takerOnly"] = True
 
         data = await self._get("/trades", params=params)
 
@@ -89,6 +104,9 @@ class DataClient:
         condition_id: str | None = None,
         max_pages: int = 50,
         limit: int = 100,
+        *,
+        user: str | None = None,
+        taker_only: bool = False,
     ) -> list[Trade]:
         """Paginate through all trades for a market.
 
@@ -97,6 +115,8 @@ class DataClient:
             condition_id: The condition ID.
             max_pages: Maximum pages to fetch (safety limit).
             limit: Page size.
+            user: A proxy-wallet address to filter trades to a single wallet.
+            taker_only: When True, restrict to trades where the wallet was the taker.
 
         Returns:
             Aggregated list of Trade objects.
@@ -110,6 +130,8 @@ class DataClient:
                 condition_id=condition_id,
                 limit=limit,
                 cursor=cursor,
+                user=user,
+                taker_only=taker_only,
             )
             if not batch:
                 break
@@ -173,3 +195,59 @@ class DataClient:
             return OpenInterest.model_validate(data[0])
 
         return OpenInterest()
+
+    async def get_wallet_positions(
+        self,
+        wallet: str,
+        condition_id: str | None = None,
+        limit: int = 100,
+    ) -> list[WalletPosition]:
+        """Fetch a wallet's open positions.
+
+        Args:
+            wallet: The proxy-wallet address to fetch positions for.
+            condition_id: Optional condition ID to restrict to a single market.
+            limit: Maximum number of positions to return.
+
+        Returns:
+            List of WalletPosition objects, or an empty list if the
+            response was not a JSON list.
+        """
+        params: dict[str, Any] = {"user": wallet, "limit": limit}
+        if condition_id is not None:
+            params["market"] = condition_id
+
+        data = await self._get("/positions", params=params)
+
+        if not isinstance(data, list):
+            logger.warning("get_wallet_positions: unexpected non-list response from /positions")
+            return []
+
+        return [WalletPosition.model_validate(p) for p in data]
+
+    async def get_wallet_activity(
+        self,
+        wallet: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[WalletActivity]:
+        """Fetch a wallet's activity feed (trades, redeems, etc.).
+
+        Args:
+            wallet: The proxy-wallet address to fetch activity for.
+            limit: Maximum number of activity records to return.
+            offset: Number of records to skip, for pagination.
+
+        Returns:
+            List of WalletActivity objects, or an empty list if the
+            response was not a JSON list.
+        """
+        params: dict[str, Any] = {"user": wallet, "limit": limit, "offset": offset}
+
+        data = await self._get("/activity", params=params)
+
+        if not isinstance(data, list):
+            logger.warning("get_wallet_activity: unexpected non-list response from /activity")
+            return []
+
+        return [WalletActivity.model_validate(a) for a in data]

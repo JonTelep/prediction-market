@@ -6,6 +6,8 @@ from prediction_market.data.polymarket.models import (
     GammaMarket,
     OrderBook,
     Trade,
+    WalletActivity,
+    WalletPosition,
 )
 
 
@@ -155,3 +157,83 @@ class TestTrade:
         assert trades[1].proxy_wallet == "0xwallet2"
         # owner remains a distinct field, not an alias for proxy_wallet
         assert trades[0].owner == "0xowner1"
+
+
+class TestWalletPosition:
+    def test_alias_mapping_and_properties(self):
+        p = WalletPosition.model_validate(
+            {
+                "proxyWallet": "0xwallet1",
+                "asset": "token-yes-1",
+                "conditionId": "0xcondition1",
+                "size": "500",
+                "avgPrice": "0.60",
+                "initialValue": "300",
+                "currentValue": "325",
+                "cashPnl": "25",
+                "percentPnl": "8.33",
+                "outcome": "Yes",
+                "title": "Will X happen?",
+            }
+        )
+        assert p.proxy_wallet == "0xwallet1"
+        assert p.condition_id == "0xcondition1"
+        assert p.cash_pnl == "25"
+        assert p.cash_pnl_float == pytest.approx(25.0)
+        assert p.size_float == pytest.approx(500.0)
+        assert p.avg_price_float == pytest.approx(0.60)
+
+    def test_defaults_without_keys(self):
+        p = WalletPosition()
+        assert p.proxy_wallet == ""
+        assert p.size_float == 0.0
+        assert p.cash_pnl_float == 0.0
+
+    def test_from_fixture_record(self):
+        import json
+        from pathlib import Path
+
+        fixtures = Path(__file__).resolve().parent.parent / "fixtures" / "positions.json"
+        records = json.loads(fixtures.read_text())
+        positions = [WalletPosition.model_validate(r) for r in records]
+        assert len(positions) == 3
+        assert positions[0].proxy_wallet == "0xwallet1"
+        assert positions[1].cash_pnl_float == pytest.approx(-24.0)
+
+
+class TestWalletActivity:
+    def test_alias_mapping_and_properties(self):
+        a = WalletActivity.model_validate(
+            {
+                "proxyWallet": "0xwallet1",
+                "timestamp": "2026-02-20T10:00:00Z",
+                "type": "TRADE",
+                "conditionId": "0xcondition1",
+                "size": "500",
+                "usdcSize": "300",
+                "price": "0.60",
+                "side": "BUY",
+                "outcome": "Yes",
+                "transactionHash": "0xtx1",
+            }
+        )
+        assert a.proxy_wallet == "0xwallet1"
+        assert a.condition_id == "0xcondition1"
+        assert a.usdc_size == "300"
+        assert a.usdc_size_float == pytest.approx(300.0)
+
+    def test_defaults_without_keys(self):
+        a = WalletActivity()
+        assert a.proxy_wallet == ""
+        assert a.usdc_size_float == 0.0
+
+    def test_from_fixture_record_mixed_types(self):
+        import json
+        from pathlib import Path
+
+        fixtures = Path(__file__).resolve().parent.parent / "fixtures" / "activity.json"
+        records = json.loads(fixtures.read_text())
+        activities = [WalletActivity.model_validate(r) for r in records]
+        assert len(activities) == 4
+        types = {a.type for a in activities}
+        assert types == {"TRADE", "REDEEM"}

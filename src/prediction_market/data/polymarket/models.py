@@ -281,3 +281,54 @@ class OpenInterest(BaseModel):
     open_interest: float = Field(0.0, alias="openInterest")
 
     model_config = {"populate_by_name": True}
+
+
+class WalletPosition(BaseModel):
+    """A wallet's open position in a market, from Data API /positions."""
+
+    proxy_wallet: str = Field("", alias="proxyWallet")
+    asset: str = Field("", alias="asset")
+    condition_id: str = Field("", alias="conditionId")
+    size: str = ""
+    avg_price: str = Field("", alias="avgPrice")
+    initial_value: str = Field("", alias="initialValue")
+    current_value: str = Field("", alias="currentValue")
+    cash_pnl: str = Field("", alias="cashPnl")
+    percent_pnl: str = Field("", alias="percentPnl")
+    outcome: str = ""
+    title: str = ""
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def size_float(self) -> float:
+        return float(self.size) if self.size else 0.0
+
+    @property
+    def avg_price_float(self) -> float:
+        return float(self.avg_price) if self.avg_price else 0.0
+
+    @property
+    def cash_pnl_float(self) -> float:
+        return float(self.cash_pnl) if self.cash_pnl else 0.0
+
+
+class WalletActivity(BaseModel):
+    """A single activity event for a wallet, from Data API /activity."""
+
+    proxy_wallet: str = Field("", alias="proxyWallet")
+    timestamp: str = ""
+    type: str = ""
+    condition_id: str = Field("", alias="conditionId")
+    size: str = ""
+    usdc_size: str = Field("", alias="usdcSize")
+    price: str = ""
+    side: str = ""
+    outcome: str = ""
+    transaction_hash: str = Field("", alias="transactionHash")
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def usdc_size_float(self) -> float:
+        return float(self.usdc_size) if self.usdc_size else 0.0
