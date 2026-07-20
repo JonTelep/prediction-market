@@ -474,3 +474,116 @@ def report_detail(ctx: click.Context, report_id: int, as_json: bool) -> None:
         )
 
         click.echo(format_report(report))
+
+
+# ---------------------------------------------------------------------------
+# archive-case
+# ---------------------------------------------------------------------------
+
+
+@main.command("archive-case")
+@click.argument("slug")
+@click.option(
+    "--output",
+    "output_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("data/cases"),
+    show_default=True,
+    help="Parent directory under which the case directory is written.",
+)
+@click.option(
+    "--max-trade-pages",
+    type=int,
+    default=200,
+    show_default=True,
+    help="Safety cap on Data API trade pages fetched (100 trades/page).",
+)
+@click.pass_context
+def archive_case_cmd(
+    ctx: click.Context, slug: str, output_dir: Path, max_trade_pages: int
+) -> None:
+    """Freeze a live Polymarket market into the on-disk backtest case format.
+
+    Fetches the market's Gamma metadata, YES-token CLOB price history, and
+    full Data-API trade tape, derives the replay spine, and writes a case
+    directory that ``load_case``/``replay_case`` accept.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.archiver import archive_case, summarize_case
+    from prediction_market.backtest.case_format import load_case
+
+    click.echo(f"Archiving case for slug {slug!r}...", err=True)
+    case_dir = _run_async(
+        archive_case(config, slug, output_dir, max_trade_pages=max_trade_pages)
+    )
+
+    case = load_case(case_dir)
+    summary = summarize_case(case)
+
+    click.echo(f"Wrote case to {case_dir}")
+    click.echo(
+        f"snapshots={summary['snapshots']} trades={summary['trades']} "
+        f"events={summary['events']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# cases
+# ---------------------------------------------------------------------------
+
+
+@main.command("cases")
+@click.option(
+    "--dir",
+    "cases_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("data/cases"),
+    show_default=True,
+    help="Directory containing archived case subdirectories.",
+)
+@click.pass_context
+def cases_cmd(ctx: click.Context, cases_dir: Path) -> None:
+    """List archived backtest cases.
+
+    Reads each subdirectory of ``--dir`` as a case via ``load_case`` and
+    prints its slug, question, snapshot/trade counts, and label status.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.case_format import load_case
+
+    cases_dir = Path(cases_dir)
+    if not cases_dir.exists():
+        click.echo(f"No cases directory at {cases_dir}.")
+        return
+
+    rows = []
+    for entry in sorted(cases_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            case = load_case(entry)
+        except ValueError as e:
+            click.echo(f"Skipping {entry.name}: {e}", err=True)
+            continue
+        rows.append(case)
+
+    if not rows:
+        click.echo(f"No archived cases found in {cases_dir}.")
+        return
+
+    click.echo(f"\n{'Slug':<30} {'Snap':>6} {'Trades':>7} {'Labeled':>8}  Question")
+    click.echo("-" * 110)
+    for case in rows:
+        slug = case.slug[:28]
+        labeled = "yes" if case.label is not None else "no"
+        q = case.question[:50]
+        click.echo(
+            f"{slug:<30} {len(case.snapshots):>6} {len(case.trades):>7} "
+            f"{labeled:>8}  {q}"
+        )
+
+    click.echo(f"\nTotal: {len(rows)} archived case(s)")
