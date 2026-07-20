@@ -43,8 +43,16 @@ _TRADE_PAGE_LIMIT = 100
 
 
 async def _resolve_market(gamma: GammaClient, slug: str) -> GammaMarket:
-    """Resolve *slug* to a single Gamma market via an exact slug match."""
+    """Resolve *slug* to a single Gamma market via an exact slug match.
+
+    Queries without the ``closed`` param first, then retries with
+    ``closed=True``: the live Gamma ``/markets?slug=`` filter excludes
+    closed markets by default (verified 2026-07-20), and most archival
+    targets are resolved markets.
+    """
     results = await gamma.search_markets(slug)
+    if not results:
+        results = await gamma.search_markets(slug, closed=True)
     if not results:
         raise ValueError(
             f"No Gamma markets found for slug {slug!r}; check the slug is correct."

@@ -260,3 +260,35 @@ def _cli_config(tmp_path):
     cfg = load_config()
     cfg.database.path = str(tmp_path / "cli_test.db")
     return cfg
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_archive_case_resolved_market_reached_via_closed_retry(
+    config, tmp_path, gamma_market_record, price_history_data
+):
+    """A resolved market's slug returns zero records from the live Gamma
+    /markets?slug= filter without closed=true (verified 2026-07-20). The
+    archiver must retry with closed=True and succeed."""
+    gamma_route = respx.get(f"{config.apis.gamma_base_url}/markets")
+    gamma_route.side_effect = [
+        httpx.Response(200, json=[]),  # default query: closed markets hidden
+        httpx.Response(200, json=[gamma_market_record]),  # closed=true retry
+    ]
+    respx.get(f"{config.apis.clob_base_url}/prices-history").mock(
+        return_value=httpx.Response(200, json=price_history_data)
+    )
+    respx.get(f"{config.apis.data_base_url}/trades").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    case_dir = await archive_case(config, SLUG, tmp_path / "cases")
+
+    assert len(gamma_route.calls) == 2
+    first_params = gamma_route.calls[0].request.url.params
+    second_params = gamma_route.calls[1].request.url.params
+    assert "closed" not in first_params
+    assert second_params["closed"] == "true"
+
+    case = load_case(case_dir)
+    assert case.slug == SLUG

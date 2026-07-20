@@ -100,14 +100,25 @@ class GammaClient:
             offset += limit
         return all_markets
 
-    async def search_markets(self, query: str, limit: int = 50) -> list[GammaMarket]:
+    async def search_markets(
+        self, query: str, limit: int = 50, *, closed: bool | None = None
+    ) -> list[GammaMarket]:
         """Look up markets by exact slug match.
 
         Despite the name, this is not a text/keyword search -- it filters
         the Gamma ``/markets`` endpoint by the ``slug`` query param, so
         *query* must be (or closely match) a market's slug.
+
+        Live-API behavior (verified 2026-07-20 during the Phase-2 live
+        validation session): ``/markets?slug=`` excludes closed markets
+        unless ``closed=true`` is also sent -- a resolved market's slug
+        returns zero records without it. Pass ``closed=True`` to reach
+        resolved markets; ``None`` (default) omits the param and preserves
+        the previous behavior.
         """
         params: dict[str, Any] = {"limit": limit}
+        if closed is not None:
+            params["closed"] = closed
         data = await self._get("/markets", params={**params, "slug": query})
         if isinstance(data, list):
             return [GammaMarket.model_validate(m) for m in data]
