@@ -47,6 +47,10 @@ class ThresholdConfig(BaseModel):
     wallet_score_min: float = 0.6
     wallet_top_k: int = 3
     wallet_lookback_hours: int = 24
+    cusum_k: float = 0.5
+    cusum_h: float = 5.0
+    cusum_min_observations: int = 5
+    cusum_amplifier: float = 1.3
 
 
 class RateLimitConfig(BaseModel):
