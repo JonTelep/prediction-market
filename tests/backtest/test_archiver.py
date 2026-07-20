@@ -292,3 +292,35 @@ async def test_archive_case_resolved_market_reached_via_closed_retry(
 
     case = load_case(case_dir)
     assert case.slug == SLUG
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_archive_case_price_history_range_retry_on_empty_interval(
+    config, tmp_path, gamma_market_record, price_history_data
+):
+    """Live-API finding (2026-07-20): interval-form /prices-history returns
+    empty for resolved markets; an explicit startTs/endTs range still
+    serves the data. The archiver must retry with the market's date range."""
+    _mock_gamma(gamma_market_record, config.apis.gamma_base_url)
+    ph_route = respx.get(f"{config.apis.clob_base_url}/prices-history")
+    ph_route.side_effect = [
+        httpx.Response(200, json={"history": []}),        # interval query
+        httpx.Response(200, json=price_history_data),      # ranged retry
+    ]
+    respx.get(f"{config.apis.data_base_url}/trades").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    case_dir = await archive_case(config, SLUG, tmp_path / "cases")
+
+    assert len(ph_route.calls) == 2
+    first = ph_route.calls[0].request.url.params
+    second = ph_route.calls[1].request.url.params
+    assert "startTs" not in first
+    assert "startTs" in second and "endTs" in second
+    assert second["fidelity"] == "60"
+
+    case = load_case(case_dir)
+    assert len(case.snapshots) == 3
+    assert "range retry" in case.notes

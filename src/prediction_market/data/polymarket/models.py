@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 class MarketOutcome(str, Enum):
@@ -221,18 +221,41 @@ class ClobPriceHistory(BaseModel):
 
 
 class Trade(BaseModel):
-    """Individual trade from Data API."""
+    """Individual trade from Data API.
+
+    Live-API note (verified 2026-07-20 during the Phase-2 validation
+    session): the real ``/trades`` records differ from this repo's
+    original fixture assumptions -- the market is keyed ``conditionId``
+    (not ``market``), the token is ``asset`` (not ``assetId``), the trade
+    time is an epoch number under ``timestamp`` (not ``matchTime``), and
+    there is **no** ``id`` field. The alias choices below accept both
+    shapes, and a validator synthesizes a deterministic ``id`` from the
+    trade's identifying fields when the API provides none (the trades
+    table uses ``id`` as its primary key for INSERT OR IGNORE dedup).
+    """
 
     id: str = ""
     taker_order_id: str = Field("", alias="takerOrderId")
-    market: str = ""
-    asset_id: str = Field("", alias="assetId")
+    market: str = Field(
+        "",
+        validation_alias=AliasChoices("market", "conditionId"),
+        serialization_alias="market",
+    )
+    asset_id: str = Field(
+        "",
+        validation_alias=AliasChoices("assetId", "asset"),
+        serialization_alias="assetId",
+    )
     side: str = ""
     size: str = ""
     fee_rate_bps: str = Field("", alias="feeRateBps")
     price: str = ""
     status: str = ""
-    match_time: str = Field("", alias="matchTime")
+    match_time: str = Field(
+        "",
+        validation_alias=AliasChoices("matchTime", "timestamp"),
+        serialization_alias="matchTime",
+    )
     outcome: str = ""
     bucket_index: str = Field("", alias="bucketIndex")
     owner: str = ""
@@ -240,6 +263,15 @@ class Trade(BaseModel):
     transaction_hash: str = Field("", alias="transactionHash")
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _synthesize_id(self) -> "Trade":
+        if not self.id and self.transaction_hash:
+            self.id = (
+                f"{self.transaction_hash}-{self.asset_id[:16]}-{self.match_time}"
+                f"-{self.side}-{self.size}-{self.price}"
+            )
+        return self
 
     @field_validator(
         "size", "price", "fee_rate_bps", "bucket_index", "match_time", mode="before"

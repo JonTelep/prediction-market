@@ -303,3 +303,76 @@ async def test_get_wallet_activity_non_list_response(config, caplog):
         assert any("get_wallet_activity" in r.message for r in caplog.records)
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_trades_condition_id_sent_as_market_param(config, trades_data):
+    """Live-API finding (2026-07-20): /trades filters on market=<conditionId>;
+    a condition_id param is silently ignored and returns the global feed."""
+    route = respx.get(f"{config.apis.data_base_url}/trades").mock(
+        return_value=httpx.Response(200, json=trades_data)
+    )
+    client = DataClient(config)
+    try:
+        await client.get_trades(condition_id="0xcond")
+        params = route.calls[0].request.url.params
+        assert params["market"] == "0xcond"
+        assert "condition_id" not in params
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_all_trades_paginates_by_offset(config, trades_data):
+    """Live-API finding (2026-07-20): cursor paging is not honored (same
+    page returned repeatedly); offset paging returns distinct pages."""
+    route = respx.get(f"{config.apis.data_base_url}/trades")
+    route.side_effect = [
+        httpx.Response(200, json=trades_data),
+        httpx.Response(200, json=[trades_data[0]]),
+    ]
+    client = DataClient(config)
+    try:
+        trades = await client.get_all_trades(condition_id="0xcond", limit=4)
+        assert len(trades) == 5
+        assert route.calls[0].request.url.params["offset"] == "0"
+        assert route.calls[1].request.url.params["offset"] == "4"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_trades_parses_live_schema_records(config):
+    """The real /trades schema: conditionId/asset/timestamp keys, numeric
+    size/price, and no id field (verified live 2026-07-20)."""
+    live_record = {
+        "proxyWallet": "0x9919a655c2694462950d9ca5a0307202740a0a5d",
+        "side": "BUY",
+        "asset": "31743734693709996857536736359780129841948",
+        "conditionId": "0xcond",
+        "size": 2.021266,
+        "price": 0.9399999802,
+        "timestamp": 1784576014,
+        "outcome": "Yes",
+        "transactionHash": "0xef50f727",
+    }
+    respx.get(f"{config.apis.data_base_url}/trades").mock(
+        return_value=httpx.Response(200, json=[live_record])
+    )
+    client = DataClient(config)
+    try:
+        trades = await client.get_trades(condition_id="0xcond")
+        t = trades[0]
+        assert t.market == "0xcond"
+        assert t.asset_id.startswith("317437346937")
+        assert t.match_time == "1784576014"
+        assert t.proxy_wallet == "0x9919a655c2694462950d9ca5a0307202740a0a5d"
+        assert t.volume_usd == pytest.approx(2.021266 * 0.9399999802)
+        # No id in the record -> a deterministic synthesized id.
+        assert t.id != ""
+        assert t.id.startswith("0xef50f727-")
+    finally:
+        await client.close()

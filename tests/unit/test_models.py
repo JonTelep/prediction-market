@@ -262,3 +262,52 @@ class TestTradeNumericCoercion:
         t = Trade.model_validate({"id": "t1", "size": "100", "price": "0.65"})
         assert t.size == "100"
         assert t.price == "0.65"
+
+
+class TestTradeLiveSchema:
+    """Live /trades records (2026-07-20): conditionId/asset/timestamp keys,
+    no id field."""
+
+    _RECORD = {
+        "proxyWallet": "0xwallet",
+        "side": "SELL",
+        "asset": "123456",
+        "conditionId": "0xcond",
+        "size": 10.5,
+        "price": 0.25,
+        "timestamp": 1767442419,
+        "outcome": "No",
+        "transactionHash": "0xtxhash",
+    }
+
+    def test_alias_choices_map_live_keys(self):
+        t = Trade.model_validate(self._RECORD)
+        assert t.market == "0xcond"
+        assert t.asset_id == "123456"
+        assert t.match_time == "1767442419"
+
+    def test_synthesized_id_is_deterministic_and_distinct(self):
+        a = Trade.model_validate(self._RECORD)
+        b = Trade.model_validate(self._RECORD)
+        assert a.id == b.id != ""
+        other = Trade.model_validate({**self._RECORD, "size": 11.0})
+        assert other.id != a.id
+
+    def test_explicit_id_not_overwritten(self):
+        t = Trade.model_validate({**self._RECORD, "id": "given-id"})
+        assert t.id == "given-id"
+
+    def test_fixture_style_keys_still_parse(self):
+        t = Trade.model_validate(
+            {"id": "t1", "market": "m1", "assetId": "tok", "matchTime": "2026-01-01T00:00:00Z"}
+        )
+        assert t.market == "m1"
+        assert t.asset_id == "tok"
+        assert t.match_time == "2026-01-01T00:00:00Z"
+
+    def test_serialization_keeps_camel_case(self):
+        t = Trade.model_validate(self._RECORD)
+        dumped = t.model_dump(by_alias=True)
+        assert "matchTime" in dumped
+        assert "assetId" in dumped
+        assert "market" in dumped

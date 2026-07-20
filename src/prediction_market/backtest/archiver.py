@@ -91,10 +91,53 @@ async def _fetch_price_history(
         )
         return [], f"price_history: error: {status}"
 
-    if not result.history:
-        return [], "price_history: empty"
+    if result.history:
+        return [(p.t, p.p) for p in result.history], None
 
-    return [(p.t, p.p) for p in result.history], None
+    # Live-API finding (2026-07-20): interval-form queries return an empty
+    # history for resolved markets, but an explicit startTs/endTs range
+    # still serves the data. Retry with a range spanning the market's
+    # lifetime (createdAt .. endDate, padded a day each side) at hourly
+    # fidelity -- the cadence the live snapshot loop approximates.
+    start_ts = _parse_iso_epoch(market.created_at)
+    end_ts = _parse_iso_epoch(market.end_date)
+    if start_ts is None or end_ts is None:
+        return [], "price_history: empty (and no market dates for range retry)"
+
+    try:
+        result = await clob.get_price_history(
+            yes_token,
+            start_ts=start_ts - 86400,
+            end_ts=end_ts + 86400,
+            fidelity=60,
+        )
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        logger.warning(
+            "archive_case: ranged price history fetch failed for token %s: HTTP %d",
+            yes_token,
+            status,
+        )
+        return [], f"price_history: error: {status} (startTs/endTs retry)"
+
+    if not result.history:
+        return [], "price_history: empty (interval and startTs/endTs both)"
+
+    return (
+        [(p.t, p.p) for p in result.history],
+        f"price_history: {len(result.history)} points via startTs/endTs range "
+        "retry (interval query returned empty for this resolved market)",
+    )
+
+
+def _parse_iso_epoch(raw: str) -> int | None:
+    """Parse an ISO-8601 string (Gamma createdAt/endDate) to epoch seconds."""
+    if not raw:
+        return None
+    try:
+        return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
 async def _fetch_trades(
