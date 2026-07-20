@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -587,3 +588,124 @@ def cases_cmd(ctx: click.Context, cases_dir: Path) -> None:
         )
 
     click.echo(f"\nTotal: {len(rows)} archived case(s)")
+
+
+# ---------------------------------------------------------------------------
+# backtest
+# ---------------------------------------------------------------------------
+
+
+@main.command("backtest")
+@click.option(
+    "--case",
+    "case_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+    help="Path to an archived case directory (see 'archive-case'/'cases').",
+)
+@click.option(
+    "--null-runs",
+    "null_runs",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Replay this many synthetic null controls and report the "
+    "detector's false-positive path rate.",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="Base seed for synthetic null-control generation.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit the evaluation (and null-control results) as JSON.",
+)
+@click.pass_context
+def backtest_cmd(
+    ctx: click.Context,
+    case_dir: Path,
+    null_runs: int,
+    seed: int,
+    as_json: bool,
+) -> None:
+    """Replay a case and score the detector's output against its label.
+
+    Replays ``--case`` through the real point-in-time detector, then
+    reports whether the labeled anomaly window was detected, the lead
+    time relative to the label's ``event_time``, and every emitted
+    report. With ``--null-runs N``, also replays N synthetic
+    volatility-matched null markets and reports how often the detector
+    fired on them anyway -- the false-positive control.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.case_format import load_case
+    from prediction_market.backtest.metrics import evaluate_replay
+    from prediction_market.backtest.replay import replay_case
+    from prediction_market.backtest.synthetic import estimate_false_positive_rate
+
+    case = load_case(case_dir)
+
+    with tempfile.TemporaryDirectory(prefix="prediction-market-backtest-") as tmpdir:
+        run_config = config.model_copy(deep=True)
+        run_config.database.path = str(Path(tmpdir) / "replay.db")
+
+        result = _run_async(replay_case(case, run_config))
+        evaluation = evaluate_replay(result, case)
+
+        fp_result: dict[str, Any] | None = None
+        if null_runs > 0:
+            fp_result = _run_async(
+                estimate_false_positive_rate(
+                    case, run_config, runs=null_runs, base_seed=seed
+                )
+            )
+
+    if as_json:
+        payload = evaluation.to_dict()
+        if fp_result is not None:
+            payload["null_control"] = fp_result
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"Case: {case.slug}")
+    click.echo(f"Question: {case.question}")
+    if case.label is not None:
+        click.echo(
+            f"Labeled window: {case.label.window_start} .. {case.label.window_end} "
+            f"(event_time={case.label.event_time})"
+        )
+    else:
+        click.echo("Labeled window: none (unlabeled case)")
+
+    click.echo(f"Detected: {evaluation.detected}")
+    lead = evaluation.lead_time_minutes
+    lead_str = f"{lead:.1f} min" if lead is not None else "n/a"
+    click.echo(f"Lead time: {lead_str}")
+    click.echo(f"First hit: {evaluation.first_hit_time or 'n/a'}")
+    click.echo(
+        f"Hits: {evaluation.hits}  False alarms: {evaluation.false_alarms}  "
+        f"Total reports: {evaluation.total_reports}"
+    )
+
+    if result.reports:
+        click.echo("\nReports:")
+        for r in result.reports:
+            ts = r.details.get("snapshot_timestamp", "?")
+            click.echo(f"  {ts}  {r.severity:<8}  {r.summary}")
+
+    if fp_result is not None:
+        click.echo("\nNull control:")
+        click.echo(
+            f"  runs={fp_result['runs']} "
+            f"paths_with_reports={fp_result['paths_with_reports']} "
+            f"reports_per_path_mean={fp_result['reports_per_path_mean']:.3f} "
+            f"fp_path_rate={fp_result['fp_path_rate']:.3f}"
+        )
