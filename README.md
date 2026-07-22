@@ -13,7 +13,10 @@ Automated surveillance system for Polymarket political prediction markets. Detec
               ┌──────────────▼───┐   ┌──────────▼──────┐  ┌───▼──────────────┐
               │   Data Clients   │   │     Agents       │  │    Reporting     │
               │ Gamma · CLOB     │   │ InfoLeakDetector │  │ JSON · Markdown  │
-              │ Data  · WS feeds │   │ ManipulationGuard│  │ File · Webhook   │
+              │ Data · WS feeds  │   │ ManipulationGuard│  │ File · Webhook   │
+              │ (WS feeds:       │   │                  │  │                  │
+              │  planned, not    │   │                  │  │                  │
+              │  yet wired)      │   │                  │  │                  │
               └────────┬─────────┘   └──────────┬───────┘  └───┬─────────────┘
                        │                        │              │
               ┌────────▼────────────────────────▼──────────────▼──────┐
@@ -32,7 +35,7 @@ Automated surveillance system for Polymarket political prediction markets. Detec
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Copy and fill in API keys
 cp .env.example .env
@@ -72,6 +75,13 @@ prediction-market reports --severity high
 # View a single report by ID
 prediction-market report <id>
 ```
+
+### Monitoring behavior
+
+Agents warm up over roughly 3 snapshots before they have enough rolling
+history to score anomalies confidently. Repeat alerts for the same market
+are suppressed by a per-market cooldown (`alert_cooldown_minutes`, default
+60).
 
 ## Container Usage
 
@@ -139,8 +149,7 @@ prediction-market/
 │   │   ├── info_leak_detector.py # Information leak detection (60s)
 │   │   └── manipulation_guard.py # Manipulation detection (300s)
 │   ├── analysis/
-│   │   ├── correlation.py        # Cross-market correlation detector
-│   │   ├── liquidity_analyzer.py # HHI, depth, susceptibility scoring
+│   │   ├── correlation.py        # Cross-market correlation detector (dead-but-planned, Phase 3)
 │   │   ├── price_analyzer.py     # Z-score price anomaly detection
 │   │   ├── timeseries.py         # RollingStats, EWMA primitives
 │   │   └── volume_analyzer.py    # Volume spike detection

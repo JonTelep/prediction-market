@@ -9,7 +9,8 @@ build/
 .venv/
 venv/
 .env
-data/
+/data/
+data/cases/
 *.db
 *.db-wal
 *.db-shm

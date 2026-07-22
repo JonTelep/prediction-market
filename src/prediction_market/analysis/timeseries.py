@@ -13,6 +13,38 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
+_CLAMP_MIN = 0.005
+_CLAMP_MAX = 0.995
+
+
+def clamp_probability(p: float) -> float:
+    """Clamp a probability into ``[0.005, 0.995]``.
+
+    Prediction-market prices can sit exactly at 0.0 or 1.0 (fully resolved
+    markets), where ``logit`` is undefined (+/- infinity). Clamping keeps
+    every logit-return finite. The 0.005 bound is a deliberate choice: it
+    caps a single observation's |logit| at ~5.29, which is comfortably above
+    any z-score threshold this system uses, so it never silently suppresses
+    a genuine move -- it only prevents infinities.
+    """
+    return min(max(p, _CLAMP_MIN), _CLAMP_MAX)
+
+
+def logit(p: float) -> float:
+    """Log-odds of probability *p*: ``ln(p / (1 - p))``.
+
+    Prediction-market prices live in [0, 1], so raw or log price-change
+    variance shrinks mechanically near the boundaries (a move from 0.98 to
+    0.99 is tiny in absolute/log terms but often means as much as a move
+    from 0.50 to 0.60). The logit maps (0, 1) onto all of the real line and
+    is the standard space for statistical modeling of prediction-market
+    prices -- see docs/RESEARCH-BRIEF.md Section 4. Callers must pass an
+    already-clamped *p* (see :func:`clamp_probability`) to avoid a math
+    domain error at the exact boundaries.
+    """
+    return math.log(p / (1.0 - p))
+
+
 def compute_z_score(value: float, mean: float, std: float) -> float:
     """Compute the z-score of a value given a mean and standard deviation.
 
@@ -88,15 +120,22 @@ class RollingStats:
 
     @property
     def std(self) -> float:
-        """Population standard deviation of values in the window.
+        """Sample standard deviation (Bessel's correction, divide by n-1) of
+        values in the window.
 
-        Returns 0.0 when fewer than 2 observations are present.
+        Population stdev (÷n) systematically understates spread for the small
+        warm-up windows this system operates with (3+ observations), which
+        inflates z-scores right when there is the least evidence to trust
+        them. Sample stdev is the honest estimator here.
+
+        Returns 0.0 when fewer than 2 observations are present -- this is
+        also the divide-by-zero guard for the ``n - 1`` denominator.
         """
         n = len(self._values)
         if n < 2:
             return 0.0
         m = self.mean
-        variance = sum((v.value - m) ** 2 for v in self._values) / n
+        variance = sum((v.value - m) ** 2 for v in self._values) / (n - 1)
         return math.sqrt(variance)
 
     def z_score(self, value: float) -> float:

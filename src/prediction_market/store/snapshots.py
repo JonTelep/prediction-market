@@ -18,6 +18,37 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _normalize_match_time(raw: str) -> str:
+    """Normalize a trade timestamp to the repo's TEXT-timestamp convention.
+
+    Accepts ISO-8601 (optionally with a trailing 'Z') or an all-digits
+    epoch-seconds string, converts to UTC, and formats as
+    "%Y-%m-%d %H:%M:%S" so it sorts and compares correctly alongside every
+    other TEXT timestamp in the database. On parse failure, returns the raw
+    string unchanged and logs at debug -- this must never raise on dirty
+    API data.
+
+    Args:
+        raw: The raw `matchTime` string from the Data API.
+
+    Returns:
+        A "%Y-%m-%d %H:%M:%S" UTC string, or `raw` unchanged if it could
+        not be parsed.
+    """
+    if not raw:
+        return raw
+    try:
+        if raw.isdigit():
+            dt = datetime.fromtimestamp(int(raw), tz=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OverflowError, OSError):
+        logger.debug("Could not normalize match_time %r; storing raw", raw)
+        return raw
+
+
 async def save_market(
     db: aiosqlite.Connection,
     market: GammaMarket,
@@ -103,6 +134,8 @@ async def save_price_snapshot(
     volume_24hr: float | None = None,
     volume_total: float | None = None,
     liquidity: float | None = None,
+    *,
+    timestamp: str | None = None,
 ) -> None:
     """Save a point-in-time price/volume snapshot for a market.
 
@@ -114,8 +147,13 @@ async def save_price_snapshot(
         volume_24hr: Trading volume in the last 24 hours (USD).
         volume_total: All-time total trading volume (USD).
         liquidity: Current liquidity available (USD).
+        timestamp: Explicit "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp for this
+            snapshot. Defaults to the current time (``_utcnow()``) --
+            existing live call sites are unaffected. The backtest replay
+            engine passes historical timestamps here so point-in-time
+            replay does not depend on wall-clock time.
     """
-    now = _utcnow()
+    now = timestamp if timestamp is not None else _utcnow()
 
     await db.execute(
         """
@@ -223,8 +261,8 @@ async def save_trade(
         """
         INSERT OR IGNORE INTO trades (
             id, market_id, asset_id, side, size, price,
-            volume_usd, outcome, owner, match_time, transaction_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             trade.id,
@@ -236,7 +274,8 @@ async def save_trade(
             trade.volume_usd,
             trade.outcome,
             trade.owner,
-            trade.match_time,
+            trade.proxy_wallet,
+            _normalize_match_time(trade.match_time),
             trade.transaction_hash,
         ),
     )
@@ -273,7 +312,8 @@ async def save_trades_batch(
             t.volume_usd,
             t.outcome,
             t.owner,
-            t.match_time,
+            t.proxy_wallet,
+            _normalize_match_time(t.match_time),
             t.transaction_hash,
         )
         for t in trades
@@ -283,8 +323,8 @@ async def save_trades_batch(
         """
         INSERT OR IGNORE INTO trades (
             id, market_id, asset_id, side, size, price,
-            volume_usd, outcome, owner, match_time, transaction_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

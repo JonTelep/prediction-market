@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from prediction_market.data.external.models import ScheduledEvent
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,42 @@ async def _fetch_one_dict(
     if row is None:
         return None
     return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Markets
+# ---------------------------------------------------------------------------
+
+
+async def get_active_political_markets(db: aiosqlite.Connection) -> list[dict[str, Any]]:
+    """Get all active, politically-classified markets.
+
+    Args:
+        db: An open aiosqlite connection.
+
+    Returns:
+        List of full market row dicts (including `question`) ordered by
+        volume descending, with `clob_token_ids` JSON-decoded into a
+        `token_ids` list key on each dict.
+    """
+    rows = await _fetch_all_dicts(
+        db,
+        """
+        SELECT id, question, description, category, tags, slug, condition_id,
+               clob_token_ids, volume, liquidity, active, closed,
+               political_confidence, political_reasons, created_at, end_date,
+               first_seen, last_updated
+        FROM markets
+        WHERE active = 1 AND political_confidence > 0
+        ORDER BY volume DESC
+        """,
+    )
+    for row in rows:
+        try:
+            row["token_ids"] = json.loads(row["clob_token_ids"])
+        except (json.JSONDecodeError, TypeError):
+            row["token_ids"] = []
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +186,66 @@ async def get_volume_history(
     )
 
 
+async def get_latest_snapshot(
+    db: aiosqlite.Connection,
+    market_id: str,
+) -> dict[str, Any] | None:
+    """Get the most recent price/volume snapshot for a market.
+
+    Args:
+        db: An open aiosqlite connection.
+        market_id: The market to query.
+
+    Returns:
+        The newest snapshot dict, or None if no snapshots exist.
+    """
+    return await _fetch_one_dict(
+        db,
+        """
+        SELECT id, market_id, timestamp, price_yes, price_no,
+               volume_24hr, volume_total, liquidity, num_trades_1hr
+        FROM snapshots
+        WHERE market_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        (market_id,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Order Book Snapshots
 # ---------------------------------------------------------------------------
+
+
+async def get_latest_orderbook_snapshot(
+    db: aiosqlite.Connection,
+    market_id: str,
+) -> dict[str, Any] | None:
+    """Get the most recent order book snapshot for a market, across all tokens.
+
+    Args:
+        db: An open aiosqlite connection.
+        market_id: The market to query.
+
+    Returns:
+        The newest orderbook snapshot dict, or None if none exist.
+    """
+    return await _fetch_one_dict(
+        db,
+        """
+        SELECT id, market_id, token_id, timestamp,
+               best_bid, best_ask, midpoint, spread, spread_pct,
+               total_bid_depth, total_ask_depth,
+               depth_1pct, depth_5pct, depth_10pct,
+               imbalance, hhi, susceptibility_score
+        FROM orderbook_snapshots
+        WHERE market_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        (market_id,),
+    )
 
 
 async def get_recent_orderbooks(
@@ -211,13 +307,178 @@ async def get_market_trades(
         db,
         """
         SELECT id, market_id, asset_id, side, size, price,
-               volume_usd, outcome, owner, match_time, transaction_hash
+               volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
         FROM trades
         WHERE market_id = ? AND match_time >= ?
         ORDER BY match_time ASC
         """,
         (market_id, cutoff),
     )
+
+
+async def get_wallet_trades(
+    db: aiosqlite.Connection,
+    wallet: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Get recent trades made by a specific wallet, across all markets.
+
+    Args:
+        db: An open aiosqlite connection.
+        wallet: The proxy wallet address to query.
+        limit: Maximum number of trades to return.
+
+    Returns:
+        List of trade dicts ordered by match_time descending.
+    """
+    return await _fetch_all_dicts(
+        db,
+        """
+        SELECT id, market_id, asset_id, side, size, price,
+               volume_usd, outcome, owner, proxy_wallet, match_time, transaction_hash
+        FROM trades
+        WHERE proxy_wallet = ?
+        ORDER BY match_time DESC
+        LIMIT ?
+        """,
+        (wallet, limit),
+    )
+
+
+async def get_market_wallet_summary(
+    db: aiosqlite.Connection,
+    market_id: str,
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
+    """Summarize per-wallet trading activity for a market within a time window.
+
+    Args:
+        db: An open aiosqlite connection.
+        market_id: The market to query.
+        start: Window start as a "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp
+            (inclusive). Explicit rather than wall-clock `hours` so this
+            works identically in live mode and in historical replay.
+        end: Window end as a "%Y-%m-%d %H:%M:%S" UTC TEXT timestamp
+            (inclusive).
+
+    Returns:
+        One row per wallet with proxy_wallet, trade_count,
+        total_volume_usd, buy_volume_usd, first_trade (earliest match_time
+        for that wallet across its entire trade history, not just this
+        window -- the "fresh wallet" signal), and last_trade (latest
+        match_time within the window). Wallets with an empty proxy_wallet
+        are excluded. Ordered by total_volume_usd descending.
+    """
+    return await _fetch_all_dicts(
+        db,
+        """
+        SELECT
+            t.proxy_wallet AS proxy_wallet,
+            COUNT(*) AS trade_count,
+            SUM(t.volume_usd) AS total_volume_usd,
+            SUM(CASE WHEN t.side = 'BUY' THEN t.volume_usd ELSE 0 END) AS buy_volume_usd,
+            (
+                SELECT MIN(w.match_time)
+                FROM trades w
+                WHERE w.proxy_wallet = t.proxy_wallet
+            ) AS first_trade,
+            MAX(t.match_time) AS last_trade
+        FROM trades t
+        WHERE t.market_id = ?
+          AND t.match_time >= ? AND t.match_time <= ?
+          AND t.proxy_wallet != ''
+        GROUP BY t.proxy_wallet
+        ORDER BY total_volume_usd DESC
+        """,
+        (market_id, start, end),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scheduled Events
+# ---------------------------------------------------------------------------
+
+
+async def get_scheduled_events_in_range(
+    db: aiosqlite.Connection,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Get scheduled events whose event_date falls within a range.
+
+    Args:
+        db: An open aiosqlite connection.
+        start: Start of the range (inclusive).
+        end: End of the range (inclusive).
+
+    Returns:
+        List of scheduled event dicts ordered by event_date ascending,
+        with `keywords` JSON-decoded into a list.
+    """
+    start_str = start.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end.strftime("%Y-%m-%d %H:%M:%S")
+    rows = await _fetch_all_dicts(
+        db,
+        """
+        SELECT id, source, event_type, title, description, event_date,
+               url, keywords, fetched_at
+        FROM scheduled_events
+        WHERE event_date BETWEEN ? AND ?
+        ORDER BY event_date ASC
+        """,
+        (start_str, end_str),
+    )
+    for row in rows:
+        try:
+            row["keywords"] = json.loads(row["keywords"])
+        except (json.JSONDecodeError, TypeError):
+            row["keywords"] = []
+    return rows
+
+
+async def save_scheduled_events(
+    db: aiosqlite.Connection,
+    events: list[ScheduledEvent],
+) -> int:
+    """Save a batch of scheduled events, ignoring duplicates.
+
+    Args:
+        db: An open aiosqlite connection.
+        events: List of ScheduledEvent dataclass instances.
+
+    Returns:
+        Number of newly inserted events (duplicates on
+        (source, title, event_date) are ignored).
+    """
+    if not events:
+        return 0
+
+    rows = [
+        (
+            e.source,
+            e.event_type,
+            e.title,
+            e.description,
+            e.event_date.strftime("%Y-%m-%d %H:%M:%S"),
+            e.url,
+            json.dumps(e.keywords),
+        )
+        for e in events
+    ]
+
+    cursor = await db.executemany(
+        """
+        INSERT OR IGNORE INTO scheduled_events (
+            source, event_type, title, description, event_date, url, keywords
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    await db.commit()
+    inserted = cursor.rowcount if cursor.rowcount >= 0 else len(events)
+    logger.debug("Batch inserted %d scheduled events", inserted)
+    return inserted
 
 
 # ---------------------------------------------------------------------------

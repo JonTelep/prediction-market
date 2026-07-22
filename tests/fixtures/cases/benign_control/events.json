@@ -1,0 +1,14 @@
+[
+  {
+    "source": "congress",
+    "event_type": "vote",
+    "title": "Scheduled Committee Vote",
+    "description": "A scheduled committee vote shared by both validation cases.",
+    "event_date": "2026-01-14 00:00:00",
+    "url": "https://example.gov/vote/validation",
+    "keywords": [
+      "committee",
+      "vote"
+    ]
+  }
+]

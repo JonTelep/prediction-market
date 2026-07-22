@@ -2,6 +2,7 @@
 
 import json
 
+import aiosqlite
 import pytest
 import pytest_asyncio
 
@@ -131,3 +132,51 @@ async def test_insert_rolling_stats(db):
     row = await cursor.fetchone()
     parsed = json.loads(row[0])
     assert parsed["mean"] == 0.65
+
+
+# Pre-change trades table definition, without proxy_wallet, for the
+# _ensure_columns upgrade proof below.
+_LEGACY_TRADES_TABLE_SQL = """
+CREATE TABLE trades (
+    id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL REFERENCES markets(id),
+    asset_id TEXT DEFAULT '',
+    side TEXT DEFAULT '',
+    size REAL DEFAULT 0,
+    price REAL DEFAULT 0,
+    volume_usd REAL DEFAULT 0,
+    outcome TEXT DEFAULT '',
+    owner TEXT DEFAULT '',
+    match_time TEXT DEFAULT '',
+    transaction_hash TEXT DEFAULT '',
+    inserted_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+@pytest.mark.asyncio
+async def test_init_database_adds_proxy_wallet_to_legacy_db(db_config, tmp_path):
+    # Simulate a database file created before the proxy_wallet column existed.
+    legacy_conn = await aiosqlite.connect(db_config.database.path)
+    await legacy_conn.execute(
+        "CREATE TABLE markets (id TEXT PRIMARY KEY, question TEXT NOT NULL)"
+    )
+    await legacy_conn.execute(_LEGACY_TRADES_TABLE_SQL)
+    await legacy_conn.commit()
+    await legacy_conn.close()
+
+    # init_database should upgrade the legacy schema in place, without error.
+    db = await init_database(db_config)
+    cursor = await db.execute("PRAGMA table_info(trades)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    assert "proxy_wallet" in columns
+
+    # A second init_database call against the now-upgraded DB must not
+    # raise (a naive double ALTER TABLE would fail with "duplicate column").
+    db2 = await init_database(db_config)
+    cursor = await db2.execute("PRAGMA table_info(trades)")
+    columns2 = {row[1] for row in await cursor.fetchall()}
+    assert "proxy_wallet" in columns2
+
+    await db.close()
+    await db2.close()

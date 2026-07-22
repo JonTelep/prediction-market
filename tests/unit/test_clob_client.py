@@ -135,3 +135,39 @@ async def test_get_order_book_http_error(config):
             await client.get_order_book("token-yes-1")
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_order_book_retries_on_500_then_succeeds(config, orderbook_data):
+    route = respx.get(f"{config.apis.clob_base_url}/book")
+    route.side_effect = [
+        httpx.Response(500),
+        httpx.Response(200, json=orderbook_data),
+    ]
+    client = ClobClient(config)
+    try:
+        ob = await client.get_order_book("token-yes-1")
+        assert len(ob.bids) == 6
+        assert route.call_count == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_price_history_sends_market_param(config):
+    """Live-API finding (2026-07-20): /prices-history requires the token id
+    under `market`; `token_id` gets a 400 ("the 'market' (asset id) is
+    mandatory")."""
+    route = respx.get(f"{config.apis.clob_base_url}/prices-history").mock(
+        return_value=httpx.Response(200, json={"history": [{"t": 1, "p": 0.5}]})
+    )
+    client = ClobClient(config)
+    try:
+        await client.get_price_history("tok123", interval="1d", fidelity=60)
+        params = route.calls[0].request.url.params
+        assert params["market"] == "tok123"
+        assert "token_id" not in params
+    finally:
+        await client.close()

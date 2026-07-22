@@ -5,17 +5,25 @@ import pytest
 import pytest_asyncio
 
 from prediction_market.config import load_config
+from prediction_market.data.external.models import ScheduledEvent
 from prediction_market.store.database import init_database
 from prediction_market.store.queries import (
+    get_active_political_markets,
     get_anomaly_reports,
+    get_latest_orderbook_snapshot,
+    get_latest_snapshot,
     get_market_trades,
+    get_market_wallet_summary,
     get_price_history,
     get_recent_orderbooks,
     get_recent_snapshots,
     get_rolling_stats,
+    get_scheduled_events_in_range,
     get_volume_history,
+    get_wallet_trades,
     save_anomaly_report,
     save_rolling_stats,
+    save_scheduled_events,
 )
 
 
@@ -85,6 +93,26 @@ async def _insert_trades(db, market_id, count):
     await db.commit()
 
 
+async def _insert_trade(
+    db,
+    trade_id,
+    market_id,
+    match_time,
+    proxy_wallet,
+    side="BUY",
+    size=100,
+    price=0.65,
+):
+    volume_usd = size * price
+    await db.execute(
+        "INSERT INTO trades (id, market_id, asset_id, side, size, price, volume_usd, "
+        "outcome, owner, proxy_wallet, match_time) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (trade_id, market_id, "tok1", side, size, price, volume_usd, "Yes", "", proxy_wallet, match_time),
+    )
+    await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_get_recent_snapshots(db):
     await _insert_snapshots(db, "q-market-1", 5)
@@ -132,6 +160,111 @@ async def test_get_market_trades(db):
     rows = await get_market_trades(db, "q-market-1", hours=48)
     assert len(rows) == 6
     assert rows[0]["side"] == "BUY"
+    assert "proxy_wallet" in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades(db):
+    await _insert_trade(db, "wt-1", "q-market-1", "2026-02-20 10:00:00", "0xwalletA")
+    await _insert_trade(db, "wt-2", "q-market-1", "2026-02-20 11:00:00", "0xwalletA")
+    await _insert_trade(db, "wt-3", "q-market-1", "2026-02-20 12:00:00", "0xwalletB")
+
+    rows = await get_wallet_trades(db, "0xwalletA")
+    assert len(rows) == 2
+    assert all(r["proxy_wallet"] == "0xwalletA" for r in rows)
+    # Ordered by match_time descending
+    assert rows[0]["id"] == "wt-2"
+    assert rows[1]["id"] == "wt-1"
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades_limit(db):
+    for i in range(5):
+        await _insert_trade(db, f"wtl-{i}", "q-market-1", f"2026-02-20 10:0{i}:00", "0xwalletC")
+
+    rows = await get_wallet_trades(db, "0xwalletC", limit=2)
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_wallet_trades_unknown_wallet(db):
+    rows = await get_wallet_trades(db, "0xnobody")
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_boundary_inclusive(db):
+    start = "2026-02-20 10:00:00"
+    end = "2026-02-20 11:00:00"
+
+    await _insert_trade(db, "b-at-start", "q-market-1", start, "0xwalletBoundary")
+    await _insert_trade(db, "b-at-end", "q-market-1", end, "0xwalletBoundary")
+    await _insert_trade(db, "b-before", "q-market-1", "2026-02-20 09:59:59", "0xwalletBoundary")
+    await _insert_trade(db, "b-after", "q-market-1", "2026-02-20 11:00:01", "0xwalletBoundary")
+
+    rows = await get_market_wallet_summary(db, "q-market-1", start, end)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["proxy_wallet"] == "0xwalletBoundary"
+    # Only the two boundary-inclusive trades counted; the one-second-outside
+    # trades on each side must be excluded.
+    assert row["trade_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_aggregates_and_fresh_wallet(db):
+    start = "2026-02-20 10:00:00"
+    end = "2026-02-20 12:00:00"
+
+    # An older trade for wallet D, outside the query window, proves
+    # first_trade reflects the wallet's entire history, not just the window.
+    await _insert_trade(
+        db, "old-d", "q-market-1", "2026-01-01 00:00:00", "0xwalletD",
+        side="BUY", size=10, price=0.5,
+    )
+    await _insert_trade(
+        db, "d1", "q-market-1", "2026-02-20 10:15:00", "0xwalletD",
+        side="BUY", size=100, price=0.6,
+    )
+    await _insert_trade(
+        db, "d2", "q-market-1", "2026-02-20 10:30:00", "0xwalletD",
+        side="SELL", size=50, price=0.6,
+    )
+    # A second wallet in the window with lower total volume.
+    await _insert_trade(
+        db, "e1", "q-market-1", "2026-02-20 10:20:00", "0xwalletE",
+        side="BUY", size=10, price=0.6,
+    )
+    # A trade with no wallet attribution must be excluded entirely.
+    await _insert_trade(db, "noattr", "q-market-1", "2026-02-20 10:25:00", "")
+
+    rows = await get_market_wallet_summary(db, "q-market-1", start, end)
+    by_wallet = {r["proxy_wallet"]: r for r in rows}
+
+    assert set(by_wallet.keys()) == {"0xwalletD", "0xwalletE"}
+
+    d = by_wallet["0xwalletD"]
+    assert d["trade_count"] == 2  # window trades only, not the old one
+    assert d["total_volume_usd"] == pytest.approx(100 * 0.6 + 50 * 0.6)
+    assert d["buy_volume_usd"] == pytest.approx(100 * 0.6)
+    # first_trade reaches back to the out-of-window trade.
+    assert d["first_trade"] == "2026-01-01 00:00:00"
+    assert d["last_trade"] == "2026-02-20 10:30:00"
+
+    e = by_wallet["0xwalletE"]
+    assert e["trade_count"] == 1
+    assert e["total_volume_usd"] == pytest.approx(10 * 0.6)
+
+    # Highest total_volume_usd first.
+    assert rows[0]["proxy_wallet"] == "0xwalletD"
+
+
+@pytest.mark.asyncio
+async def test_get_market_wallet_summary_empty(db):
+    rows = await get_market_wallet_summary(
+        db, "q-market-1", "2026-02-20 10:00:00", "2026-02-20 11:00:00"
+    )
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -200,3 +333,166 @@ async def test_rolling_stats_upsert(db):
 async def test_get_rolling_stats_not_found(db):
     result = await get_rolling_stats(db, "nonexistent", "price")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_snapshot_returns_newest(db):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    for i, price in enumerate([0.50, 0.55, 0.60]):
+        ts = (now - timedelta(hours=3 - i)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO snapshots (market_id, timestamp, price_yes, price_no) "
+            "VALUES (?, ?, ?, ?)",
+            ("q-market-1", ts, price, 1 - price),
+        )
+    await db.commit()
+
+    result = await get_latest_snapshot(db, "q-market-1")
+    assert result is not None
+    assert result["price_yes"] == 0.60
+
+
+@pytest.mark.asyncio
+async def test_get_latest_snapshot_unknown_market(db):
+    result = await get_latest_snapshot(db, "nonexistent")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_orderbook_snapshot_returns_newest(db):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    for i, bid in enumerate([0.60, 0.62, 0.64]):
+        ts = (now - timedelta(hours=3 - i)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO orderbook_snapshots (market_id, token_id, timestamp, best_bid) "
+            "VALUES (?, ?, ?, ?)",
+            ("q-market-1", "tok1", ts, bid),
+        )
+    await db.commit()
+
+    result = await get_latest_orderbook_snapshot(db, "q-market-1")
+    assert result is not None
+    assert result["best_bid"] == 0.64
+
+
+@pytest.mark.asyncio
+async def test_get_latest_orderbook_snapshot_unknown_market(db):
+    result = await get_latest_orderbook_snapshot(db, "nonexistent")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_political_markets(db):
+    await db.execute(
+        "INSERT INTO markets (id, question, volume, active, political_confidence, clob_token_ids) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("inactive-market", "Inactive?", 500000, 0, 0.9, '["tokA", "tokB"]'),
+    )
+    await db.execute(
+        "INSERT INTO markets (id, question, volume, active, political_confidence, clob_token_ids) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("nonpolitical-market", "Nonpolitical?", 900000, 1, 0.0, '["tokC", "tokD"]'),
+    )
+    await db.execute(
+        "INSERT INTO markets (id, question, volume, active, political_confidence, clob_token_ids) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("high-volume-political", "High volume political?", 200000, 1, 0.8, '["tokE", "tokF"]'),
+    )
+    await db.commit()
+    # Bump the seeded "q-market-1" market to be political too, with lower volume.
+    await db.execute(
+        "UPDATE markets SET political_confidence = 0.5, clob_token_ids = ? WHERE id = ?",
+        ('["tokG"]', "q-market-1"),
+    )
+    await db.commit()
+
+    rows = await get_active_political_markets(db)
+    ids = [r["id"] for r in rows]
+
+    assert "inactive-market" not in ids
+    assert "nonpolitical-market" not in ids
+    assert ids == ["high-volume-political", "q-market-1"]
+    assert rows[0]["token_ids"] == ["tokE", "tokF"]
+    assert isinstance(rows[0]["token_ids"], list)
+    assert "question" in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_save_scheduled_events_idempotent(db):
+    from datetime import datetime, timezone
+
+    events = [
+        ScheduledEvent(
+            source="congress",
+            event_type="hearing",
+            title="Judiciary Committee Hearing",
+            description="A hearing",
+            event_date=datetime(2026, 8, 1, 14, 0, tzinfo=timezone.utc),
+            url="https://example.com/1",
+            keywords=["judiciary", "hearing"],
+        ),
+        ScheduledEvent(
+            source="court",
+            event_type="ruling",
+            title="Supreme Court Ruling",
+            description="A ruling",
+            event_date=datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc),
+            url="https://example.com/2",
+            keywords=["scotus"],
+        ),
+    ]
+
+    inserted = await save_scheduled_events(db, events)
+    assert inserted == 2
+
+    cursor = await db.execute("SELECT COUNT(*) FROM scheduled_events")
+    row = await cursor.fetchone()
+    assert row[0] == 2
+
+    # Re-inserting the same events should be a no-op due to the unique index.
+    inserted_again = await save_scheduled_events(db, events)
+    assert inserted_again == 0
+
+    cursor = await db.execute("SELECT COUNT(*) FROM scheduled_events")
+    row = await cursor.fetchone()
+    assert row[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_events_in_range(db):
+    from datetime import datetime, timezone
+
+    in_range_event = ScheduledEvent(
+        source="congress",
+        event_type="hearing",
+        title="In Range Hearing",
+        description="Happens within the query window",
+        event_date=datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc),
+        url="https://example.com/in-range",
+        keywords=["election", "senate"],
+    )
+    out_of_range_event = ScheduledEvent(
+        source="congress",
+        event_type="hearing",
+        title="Out Of Range Hearing",
+        description="Happens outside the query window",
+        event_date=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+        url="https://example.com/out-of-range",
+        keywords=["unrelated"],
+    )
+
+    await save_scheduled_events(db, [in_range_event, out_of_range_event])
+
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
+    rows = await get_scheduled_events_in_range(db, start, end)
+
+    titles = [r["title"] for r in rows]
+    assert "In Range Hearing" in titles
+    assert "Out Of Range Hearing" not in titles
+    assert rows[0]["keywords"] == ["election", "senate"]
+    assert isinstance(rows[0]["keywords"], list)

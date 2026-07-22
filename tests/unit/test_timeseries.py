@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from prediction_market.analysis.timeseries import EWMA, RollingStats, compute_z_score
+from prediction_market.analysis.timeseries import (
+    EWMA,
+    RollingStats,
+    clamp_probability,
+    compute_z_score,
+    logit,
+)
 
 
 class TestComputeZScore:
@@ -32,6 +38,21 @@ class TestRollingStats:
         for v in [10, 10, 10, 10]:
             rs.add(v, now)
         assert rs.std == pytest.approx(0.0)
+
+    def test_std_is_sample_not_population(self):
+        # values [1, 2, 3, 4]: mean = 10/4 = 2.5
+        # squared deviations: 2.25, 0.25, 0.25, 2.25 -> sum = 5.0
+        # sample variance = 5.0 / (n - 1) = 5.0 / 3 = 1.6666...
+        # sample std = sqrt(5/3) = 1.2909944487...
+        # (population std would instead divide by n=4: sqrt(1.25) = 1.1180339887,
+        # which is what the old implementation returned -- this is the
+        # regression check for the population -> sample switch.)
+        rs = RollingStats(window=timedelta(days=7))
+        now = datetime.now(timezone.utc)
+        for i, v in enumerate([1.0, 2.0, 3.0, 4.0]):
+            rs.add(v, now + timedelta(seconds=i))
+        assert rs.mean == pytest.approx(2.5)
+        assert rs.std == pytest.approx(1.2909944487)
 
     def test_z_score(self):
         rs = RollingStats(window=timedelta(days=7))
@@ -93,3 +114,22 @@ class TestEWMA:
         data = ewma.to_dict()
         ewma2 = EWMA.from_dict(data)
         assert ewma2.value == pytest.approx(ewma.value)
+
+
+class TestClampProbability:
+    def test_clamps_low(self):
+        assert clamp_probability(0.0) == pytest.approx(0.005)
+
+    def test_clamps_high(self):
+        assert clamp_probability(1.0) == pytest.approx(0.995)
+
+    def test_passthrough_mid_range(self):
+        assert clamp_probability(0.5) == pytest.approx(0.5)
+
+
+class TestLogit:
+    def test_logit_half_is_zero(self):
+        assert logit(0.5) == pytest.approx(0.0)
+
+    def test_logit_monotonic(self):
+        assert logit(0.9) > logit(0.5) > logit(0.1)

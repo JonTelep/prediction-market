@@ -1,0 +1,20 @@
+{
+  "id": "minimal-market-1",
+  "question": "Will the nominee be confirmed by the Senate before July 2026?",
+  "description": "Resolves YES if the Senate confirms the nominee before July 1, 2026.",
+  "outcomes": ["Yes", "No"],
+  "outcomePrices": ["0.72", "0.28"],
+  "volume": 50000,
+  "volume24hr": 5000,
+  "liquidity": 20000,
+  "active": false,
+  "closed": true,
+  "archived": true,
+  "createdAt": "2026-05-01T00:00:00Z",
+  "endDate": "2026-07-01T00:00:00Z",
+  "tags": [{"label": "Politics"}, {"label": "Senate"}],
+  "slug": "nominee-confirmed-senate-july-2026",
+  "category": "politics",
+  "conditionId": "0xminimalcond1",
+  "clobTokenIds": ["token-yes-minimal", "token-no-minimal"]
+}

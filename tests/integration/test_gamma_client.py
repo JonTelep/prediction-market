@@ -72,6 +72,23 @@ async def test_get_market_not_found(config):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_markets_retries_on_500_then_succeeds(config, markets_data):
+    route = respx.get(f"{config.apis.gamma_base_url}/markets")
+    route.side_effect = [
+        httpx.Response(500),
+        httpx.Response(200, json=markets_data),
+    ]
+    client = GammaClient(config)
+    try:
+        markets = await client.get_markets()
+        assert len(markets) == 3
+        assert route.call_count == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_get_all_markets_pagination(config, markets_data):
     # First page returns full batch, second page returns empty
     route = respx.get(f"{config.apis.gamma_base_url}/markets")
@@ -83,5 +100,40 @@ async def test_get_all_markets_pagination(config, markets_data):
     try:
         markets = await client.get_all_markets()
         assert len(markets) == 3
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_markets_default_omits_closed_param(config, markets_data):
+    route = respx.get(f"{config.apis.gamma_base_url}/markets").mock(
+        return_value=httpx.Response(200, json=markets_data)
+    )
+    client = GammaClient(config)
+    try:
+        await client.search_markets("some-slug")
+        params = route.calls[0].request.url.params
+        assert params["slug"] == "some-slug"
+        assert "closed" not in params
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_markets_closed_true_sends_param(config, markets_data):
+    """Live Gamma /markets?slug= excludes closed markets unless closed=true
+    is sent (verified against the real API 2026-07-20) -- resolved markets
+    are only reachable with the param."""
+    route = respx.get(f"{config.apis.gamma_base_url}/markets").mock(
+        return_value=httpx.Response(200, json=markets_data)
+    )
+    client = GammaClient(config)
+    try:
+        await client.search_markets("some-slug", closed=True)
+        params = route.calls[0].request.url.params
+        assert params["slug"] == "some-slug"
+        assert params["closed"] == "true"
     finally:
         await client.close()

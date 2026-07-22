@@ -1,0 +1,41 @@
+[
+  {
+    "proxyWallet": "0xwallet1",
+    "asset": "token-yes-1",
+    "conditionId": "0xcondition1",
+    "size": "500",
+    "avgPrice": "0.60",
+    "initialValue": "300",
+    "currentValue": "325",
+    "cashPnl": "25",
+    "percentPnl": "8.33",
+    "outcome": "Yes",
+    "title": "Will X happen?"
+  },
+  {
+    "proxyWallet": "0xwallet1",
+    "asset": "token-no-2",
+    "conditionId": "0xcondition2",
+    "size": "1200",
+    "avgPrice": "0.35",
+    "initialValue": "420",
+    "currentValue": "396",
+    "cashPnl": "-24",
+    "percentPnl": "-5.71",
+    "outcome": "No",
+    "title": "Will Y happen?"
+  },
+  {
+    "proxyWallet": "0xwallet1",
+    "asset": "token-yes-3",
+    "conditionId": "0xcondition3",
+    "size": "80",
+    "avgPrice": "0.90",
+    "initialValue": "72",
+    "currentValue": "76",
+    "cashPnl": "4",
+    "percentPnl": "5.56",
+    "outcome": "Yes",
+    "title": "Will Z happen?"
+  }
+]

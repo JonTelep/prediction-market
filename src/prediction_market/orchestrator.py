@@ -17,7 +17,13 @@ from typing import Any
 import aiosqlite
 import httpx
 
+from prediction_market.agents.base import BaseAgent
+from prediction_market.agents.info_leak_detector import InfoLeakDetector
+from prediction_market.agents.manipulation_guard import ManipulationGuard
 from prediction_market.config import AppConfig
+from prediction_market.data.external.congress import CongressClient
+from prediction_market.data.external.court_calendar import CourtCalendarClient
+from prediction_market.data.external.white_house import WhiteHouseClient
 from prediction_market.data.political_filter import PoliticalClassification, PoliticalFilter
 from prediction_market.data.polymarket.clob_client import ClobClient
 from prediction_market.data.polymarket.data_client import DataClient
@@ -31,19 +37,7 @@ from prediction_market.reporting.sink import (
     WebhookSink,
 )
 from prediction_market.store.database import init_database
-
-# Lazy imports for modules that may not exist yet ----------------------------
-# These are structured so the orchestrator file can be imported even if the
-# downstream agent or WebSocket modules are still being developed.
-try:
-    from prediction_market.agents.info_leak_detector import InfoLeakDetector
-except ImportError:  # pragma: no cover
-    InfoLeakDetector = None  # type: ignore[assignment,misc]
-
-try:
-    from prediction_market.agents.manipulation_guard import ManipulationGuard
-except ImportError:  # pragma: no cover
-    ManipulationGuard = None  # type: ignore[assignment,misc]
+from prediction_market.store.queries import save_scheduled_events
 
 logger = logging.getLogger(__name__)
 
@@ -106,23 +100,57 @@ class Orchestrator:
         self._data: DataClient | None = None
         self._filter: PoliticalFilter | None = None
         self._sink: ReportSink | None = None
+        self._congress: CongressClient | None = None
+        self._court: CourtCalendarClient | None = None
+        self._white_house: WhiteHouseClient | None = None
 
         # Tracked state
         self.markets: dict[str, TrackedMarket] = {}
+        self._token_order_warned: set[str] = set()
 
         # Agent handles
-        self._agents: list[Any] = []
+        self._agents: list[BaseAgent] = []
 
         # Background tasks
         self._tasks: list[asyncio.Task[None]] = []
         self._shutdown_event = asyncio.Event()
 
+    def _check_token_order(self, market_id: str, m: GammaMarket) -> None:
+        """Warn once per market if label-mapped and positional token order disagree.
+
+        ``GammaMarket.yes_token_id``/``no_token_id`` prefer mapping by the
+        ``outcomes`` labels and fall back to the positional convention
+        (``clob_token_ids[0]``=YES, ``[1]``=NO). When the two disagree, the
+        market's outcome listing is inverted relative to the positional
+        assumption -- log it once so operators notice.
+        """
+        if market_id in self._token_order_warned:
+            return
+        if len(m.clob_token_ids) < 2:
+            return
+        positional_yes = m.clob_token_ids[0]
+        if m.yes_token_id is not None and m.yes_token_id != positional_yes:
+            logger.warning(
+                "Market %s (%s) has inverted YES/NO token order: "
+                "label-mapped yes_token_id=%s differs from positional clob_token_ids[0]=%s",
+                market_id,
+                m.question[:60],
+                m.yes_token_id,
+                positional_yes,
+            )
+            self._token_order_warned.add(market_id)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self) -> None:
-        """Initialise all subsystems and run until a shutdown signal fires."""
+    async def _init_resources(self) -> None:
+        """Initialise DB, clients, sinks, initial market discovery, and agents.
+
+        Extracted from :meth:`start` so tests can drive the wiring with a
+        live connection without installing signal handlers or launching
+        background tasks / agent loops. Returns before any of those.
+        """
         logger.info("Orchestrator starting up")
 
         # 1. Database
@@ -139,6 +167,9 @@ class Orchestrator:
         self._gamma = GammaClient(self.config, http_client=self._http)
         self._clob = ClobClient(self.config, http_client=self._http)
         self._data = DataClient(self.config, http_client=self._http)
+        self._congress = CongressClient(self.config, http_client=self._http)
+        self._court = CourtCalendarClient(self.config, http_client=self._http)
+        self._white_house = WhiteHouseClient(self.config, http_client=self._http)
 
         # 4. Political filter
         self._filter = PoliticalFilter()
@@ -149,13 +180,14 @@ class Orchestrator:
         # 6. Report sinks
         self._sink = self._build_sinks()
 
-        # 7. Agents
-        self._agents = self._build_agents()
-        if self._agents:
-            agent_names = [type(a).__name__ for a in self._agents]
-            logger.info("Agents initialised: %s", ", ".join(agent_names))
-        else:
-            logger.warning("No agents were initialised (missing implementations?)")
+        # 7. Agents (fail-fast: a mis-wired agent raises out of here)
+        self._agents = self._build_agents(self._db, [self._sink])
+        agent_names = [type(a).__name__ for a in self._agents]
+        logger.info("Agents initialised: %s", ", ".join(agent_names))
+
+    async def start(self) -> None:
+        """Initialise all subsystems and run until a shutdown signal fires."""
+        await self._init_resources()
 
         # 8. Install signal handlers
         self._install_signal_handlers()
@@ -173,14 +205,17 @@ class Orchestrator:
                 name="snapshot-loop",
             )
         )
-
-        # Launch agent loops
-        for agent in self._agents:
-            task = asyncio.create_task(
-                self._run_agent(agent),
-                name=f"agent-{type(agent).__name__}",
+        self._tasks.append(
+            asyncio.create_task(
+                self._periodic_event_refresh(),
+                name="event-refresh",
             )
-            self._tasks.append(task)
+        )
+
+        # 10. Start agents (BaseAgent.start() owns the tick loop and error
+        # isolation -- see agents/base.py:63-102).
+        for agent in self._agents:
+            await agent.start()
 
         logger.info(
             "Orchestrator running  --  tracking %d political markets, %d agents active",
@@ -196,7 +231,7 @@ class Orchestrator:
         """Gracefully shut down all background tasks and release resources."""
         logger.info("Orchestrator shutting down")
 
-        # Cancel tasks
+        # Cancel background (non-agent) tasks
         for task in self._tasks:
             if not task.done():
                 task.cancel()
@@ -204,13 +239,12 @@ class Orchestrator:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
-        # Close agents
+        # Stop agents (BaseAgent.stop() cancels their loop task and awaits it)
         for agent in self._agents:
-            if hasattr(agent, "close"):
-                try:
-                    await agent.close()
-                except Exception:
-                    logger.exception("Error closing agent %s", type(agent).__name__)
+            try:
+                await agent.stop()
+            except Exception:
+                logger.exception("Error stopping agent %s", type(agent).__name__)
 
         # Close sinks
         if self._sink is not None:
@@ -220,7 +254,14 @@ class Orchestrator:
                 logger.exception("Error closing report sink")
 
         # Close API clients (they do NOT own the shared http client)
-        for client in (self._gamma, self._clob, self._data):
+        for client in (
+            self._gamma,
+            self._clob,
+            self._data,
+            self._congress,
+            self._court,
+            self._white_house,
+        ):
             if client is not None:
                 try:
                     await client.close()
@@ -329,6 +370,7 @@ class Orchestrator:
         for market_id, tracked in self.markets.items():
             m = tracked.market
             logger.info("Backfilling %s (%s)", market_id, m.question[:60])
+            self._check_token_order(market_id, m)
 
             # Persist the market record
             await save_market(
@@ -354,8 +396,8 @@ class Orchestrator:
                         await save_price_snapshot(
                             self._db,
                             market_id,
-                            price_yes=point.p if token_id == m.clob_token_ids[0] else None,
-                            price_no=point.p if len(m.clob_token_ids) > 1 and token_id == m.clob_token_ids[1] else None,
+                            price_yes=point.p if token_id == m.yes_token_id else None,
+                            price_no=point.p if token_id == m.no_token_id else None,
                         )
                         total_points += 1
                 except Exception:
@@ -411,7 +453,7 @@ class Orchestrator:
             if not classification.is_political:
                 continue
             # Volume filter
-            if m.volume < self._filter._min_volume:
+            if m.volume < self._filter.min_volume:
                 continue
 
             if m.id not in self.markets:
@@ -490,13 +532,16 @@ class Orchestrator:
 
             for market_id, tracked in list(self.markets.items()):
                 m = tracked.market
+                self._check_token_order(market_id, m)
                 # -- Price snapshot --
                 try:
                     if m.clob_token_ids:
-                        price_yes = await self._clob.get_midpoint(m.clob_token_ids[0])
+                        price_yes = None
+                        if m.yes_token_id is not None:
+                            price_yes = await self._clob.get_midpoint(m.yes_token_id)
                         price_no = None
-                        if len(m.clob_token_ids) > 1:
-                            price_no = await self._clob.get_midpoint(m.clob_token_ids[1])
+                        if m.no_token_id is not None:
+                            price_no = await self._clob.get_midpoint(m.no_token_id)
                         await save_price_snapshot(
                             self._db,
                             market_id,
@@ -528,50 +573,55 @@ class Orchestrator:
             if run_orderbook:
                 last_orderbook_run = now
 
-    # ------------------------------------------------------------------
-    # Agent runner (error isolation)
-    # ------------------------------------------------------------------
+    async def _periodic_event_refresh(self) -> None:
+        """Periodically refresh scheduled events from the government-calendar
+        clients (Congress, court, White House) into the ``scheduled_events``
+        table.
 
-    async def _run_agent(self, agent: Any) -> None:
-        """Run a single agent in an isolated loop.
-
-        If the agent raises, the error is logged and the loop retries
-        after a brief backoff.  One agent crashing does not affect others.
+        Refreshes once immediately at startup -- before the first sleep --
+        so the info-leak detector's event amplifier has data to work with
+        from the very first tick, rather than waiting a full interval.
         """
-        name = type(agent).__name__
-        backoff = 5  # seconds
-        max_backoff = 300  # 5 minutes
+        interval = self.config.polling.event_refresh_interval_seconds
+
+        await self._refresh_scheduled_events()
 
         while not self._shutdown_event.is_set():
             try:
-                await agent.run(
-                    markets=self.markets,
-                    db=self._db,
-                    clob=self._clob,
-                    data=self._data,
-                    sink=self._sink,
-                    shutdown=self._shutdown_event,
-                    config=self.config,
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=interval,
                 )
-                # If run() returns cleanly, the agent decided to exit
-                logger.info("Agent %s exited cleanly", name)
                 return
-            except asyncio.CancelledError:
-                logger.info("Agent %s cancelled", name)
-                return
-            except Exception:
-                logger.exception(
-                    "Agent %s crashed; restarting in %ds", name, backoff
-                )
-                try:
-                    await asyncio.wait_for(
-                        self._shutdown_event.wait(),
-                        timeout=backoff,
-                    )
-                    return  # shutdown requested during backoff
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2, max_backoff)
+            except asyncio.TimeoutError:
+                pass
+            await self._refresh_scheduled_events()
+
+    async def _refresh_scheduled_events(self) -> None:
+        """Fetch upcoming events from all three calendar clients and persist
+        them. One failed cycle does not kill the loop.
+        """
+        assert self._congress is not None
+        assert self._court is not None
+        assert self._white_house is not None
+        assert self._db is not None
+
+        try:
+            hearings = await self._congress.get_upcoming_hearings(days_ahead=7)
+            votes = await self._congress.get_upcoming_votes(days_ahead=7)
+            arguments = await self._court.get_upcoming_arguments(days_ahead=14)
+            schedule = await self._white_house.get_schedule(days_ahead=7)
+
+            events = hearings + votes + arguments + schedule
+            inserted = await save_scheduled_events(self._db, events)
+            logger.info(
+                "Event refresh complete: %d new scheduled events inserted "
+                "(%d fetched)",
+                inserted,
+                len(events),
+            )
+        except Exception:
+            logger.exception("Error during periodic event refresh")
 
     # ------------------------------------------------------------------
     # Builders
@@ -597,26 +647,35 @@ class Orchestrator:
             return sinks[0]
         return CompositeSink(sinks)
 
-    def _build_agents(self) -> list[Any]:
-        """Instantiate the configured surveillance agents."""
-        agents: list[Any] = []
+    def _build_agents(
+        self, db: aiosqlite.Connection, sinks: list[ReportSink]
+    ) -> list[BaseAgent]:
+        """Instantiate the configured surveillance agents.
+
+        Construction failures propagate -- a mis-wired agent must crash
+        startup loudly rather than being logged-and-ignored.
+        """
+        valid_filters = ("info-leak", "manipulation")
+        if self._agent_filter is not None and self._agent_filter not in valid_filters:
+            raise ValueError(
+                f"Unknown agent filter {self._agent_filter!r}; "
+                f"expected one of {valid_filters} or None"
+            )
+
+        agents: list[BaseAgent] = []
 
         want_info_leak = self._agent_filter in (None, "info-leak")
         want_manipulation = self._agent_filter in (None, "manipulation")
 
-        if want_info_leak and InfoLeakDetector is not None:
-            try:
-                agents.append(InfoLeakDetector(self.config))
-                logger.info("InfoLeakDetector initialised")
-            except Exception:
-                logger.exception("Failed to initialise InfoLeakDetector")
+        if want_info_leak:
+            agents.append(InfoLeakDetector(self.config, db, sinks))
+            logger.info("InfoLeakDetector initialised")
 
-        if want_manipulation and ManipulationGuard is not None:
-            try:
-                agents.append(ManipulationGuard(self.config))
-                logger.info("ManipulationGuard initialised")
-            except Exception:
-                logger.exception("Failed to initialise ManipulationGuard")
+        if want_manipulation:
+            agents.append(
+                ManipulationGuard(self.config, db, sinks, http_client=self._http)
+            )
+            logger.info("ManipulationGuard initialised")
 
         return agents
 

@@ -35,12 +35,22 @@ class ThresholdConfig(BaseModel):
     event_amplifier: float = 1.5
     news_dampener: float = 0.3
     rolling_window_days: int = 7
+    alert_cooldown_minutes: int = 60
     susceptibility_threshold: float = 0.7
     liquidity_drop_pct: float = 0.50
     depth_weight: float = 0.30
     spread_weight: float = 0.25
     concentration_weight: float = 0.25
     imbalance_weight: float = 0.20
+    wallet_freshness_hours: int = 48
+    wallet_min_volume_usd: float = 1000.0
+    wallet_score_min: float = 0.6
+    wallet_top_k: int = 3
+    wallet_lookback_hours: int = 24
+    cusum_k: float = 0.5
+    cusum_h: float = 5.0
+    cusum_min_observations: int = 5
+    cusum_amplifier: float = 1.3
 
 
 class RateLimitConfig(BaseModel):

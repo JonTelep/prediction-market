@@ -1,0 +1,266 @@
+"""Data API client for trades, market holders, and open interest."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+
+from prediction_market.config import AppConfig
+from prediction_market.data.polymarket.models import (
+    MarketHolder,
+    OpenInterest,
+    Trade,
+    WalletActivity,
+    WalletPosition,
+)
+from prediction_market.data.polymarket.rate_limiter import TokenBucketRateLimiter
+from prediction_market.data.retry import get_with_retry
+
+logger = logging.getLogger(__name__)
+
+
+class DataClient:
+    """Client for the Data API (trades, holders, open interest).
+
+    Base URL: https://data-api.polymarket.com
+    """
+
+    def __init__(self, config: AppConfig, http_client: httpx.AsyncClient | None = None) -> None:
+        self.config = config
+        self.base_url = config.apis.data_base_url
+        self._client = http_client or httpx.AsyncClient(timeout=30.0)
+        self._owns_client = http_client is None
+        self._limiter = TokenBucketRateLimiter(
+            max_tokens=config.rate_limits.data_requests_per_window,
+            window_seconds=config.rate_limits.data_window_seconds,
+        )
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client if we own it."""
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """Make a rate-limited GET request to the Data API."""
+        await self._limiter.acquire()
+        url = f"{self.base_url}{path}"
+        resp = await get_with_retry(self._client, url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_trades(
+        self,
+        market_id: str | None = None,
+        condition_id: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+        *,
+        user: str | None = None,
+        taker_only: bool = False,
+        offset: int | None = None,
+    ) -> list[Trade]:
+        """Fetch trades for a market or condition.
+
+        At least one of market_id or condition_id should be provided.
+
+        Live-API behavior (verified 2026-07-20): the ``/trades`` endpoint's
+        market filter is the ``market`` query param carrying a **condition
+        id**; a ``condition_id`` param is silently ignored (returning the
+        unfiltered global feed), so both Python params map onto ``market``
+        on the wire, ``condition_id`` winning when both are given.
+        Pagination is ``offset``-based; ``cursor`` is not honored by the
+        live API and is retained only for backward compatibility.
+
+        Args:
+            market_id: The CLOB market slug/ID to filter by.
+            condition_id: The condition ID to filter by.
+            limit: Maximum number of trades to return per page.
+            cursor: Pagination cursor from a previous response (not honored
+                by the live API -- prefer ``offset``).
+            user: A proxy-wallet address to filter trades to a single wallet.
+            taker_only: When True, restrict to trades where the wallet was the taker.
+            offset: Number of records to skip, for pagination.
+
+        Returns:
+            List of Trade objects, newest first.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        market_filter = condition_id if condition_id is not None else market_id
+        if market_filter is not None:
+            params["market"] = market_filter
+        if cursor is not None:
+            params["cursor"] = cursor
+        if offset is not None:
+            params["offset"] = offset
+        if user is not None:
+            params["user"] = user
+        if taker_only:
+            params["takerOnly"] = True
+
+        data = await self._get("/trades", params=params)
+
+        # The API may return a list directly or a dict with a "data" key
+        trades_list: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            trades_list = data
+        elif isinstance(data, dict):
+            trades_list = data.get("data", data.get("trades", []))
+
+        return [Trade.model_validate(t) for t in trades_list]
+
+    async def get_all_trades(
+        self,
+        market_id: str | None = None,
+        condition_id: str | None = None,
+        max_pages: int = 50,
+        limit: int = 100,
+        *,
+        user: str | None = None,
+        taker_only: bool = False,
+    ) -> list[Trade]:
+        """Paginate through all trades for a market.
+
+        Args:
+            market_id: The CLOB market slug/ID.
+            condition_id: The condition ID.
+            max_pages: Maximum pages to fetch (safety limit).
+            limit: Page size.
+            user: A proxy-wallet address to filter trades to a single wallet.
+            taker_only: When True, restrict to trades where the wallet was the taker.
+
+        Returns:
+            Aggregated list of Trade objects.
+        """
+        all_trades: list[Trade] = []
+
+        # Offset-based pagination: the live API does not honor a cursor
+        # param (verified 2026-07-20 -- cursor paging returned the same
+        # first page repeatedly), but offset paging returns distinct,
+        # time-descending pages.
+        for page in range(max_pages):
+            batch = await self.get_trades(
+                market_id=market_id,
+                condition_id=condition_id,
+                limit=limit,
+                offset=page * limit,
+                user=user,
+                taker_only=taker_only,
+            )
+            if not batch:
+                break
+            all_trades.extend(batch)
+            if len(batch) < limit:
+                break
+
+        return all_trades
+
+    async def get_market_holders(
+        self,
+        condition_id: str,
+        token_id: str | None = None,
+        limit: int = 100,
+    ) -> list[MarketHolder]:
+        """Fetch current holders for a market condition.
+
+        Args:
+            condition_id: The condition ID of the market.
+            token_id: Optional token ID to filter to a specific outcome.
+            limit: Maximum number of holders to return.
+
+        Returns:
+            List of MarketHolder objects sorted by position size.
+        """
+        params: dict[str, Any] = {
+            "condition_id": condition_id,
+            "limit": limit,
+        }
+        if token_id is not None:
+            params["token_id"] = token_id
+
+        data = await self._get("/holders", params=params)
+
+        holders_list: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            holders_list = data
+        elif isinstance(data, dict):
+            holders_list = data.get("data", data.get("holders", []))
+
+        return [MarketHolder.model_validate(h) for h in holders_list]
+
+    async def get_open_interest(self, condition_id: str) -> OpenInterest:
+        """Fetch open interest for a market condition.
+
+        Args:
+            condition_id: The condition ID of the market.
+
+        Returns:
+            OpenInterest with total value currently at stake.
+        """
+        data = await self._get("/open-interest", params={"condition_id": condition_id})
+
+        if isinstance(data, dict):
+            return OpenInterest.model_validate(data)
+
+        # If the API returns a list, take the first entry
+        if isinstance(data, list) and data:
+            return OpenInterest.model_validate(data[0])
+
+        return OpenInterest()
+
+    async def get_wallet_positions(
+        self,
+        wallet: str,
+        condition_id: str | None = None,
+        limit: int = 100,
+    ) -> list[WalletPosition]:
+        """Fetch a wallet's open positions.
+
+        Args:
+            wallet: The proxy-wallet address to fetch positions for.
+            condition_id: Optional condition ID to restrict to a single market.
+            limit: Maximum number of positions to return.
+
+        Returns:
+            List of WalletPosition objects, or an empty list if the
+            response was not a JSON list.
+        """
+        params: dict[str, Any] = {"user": wallet, "limit": limit}
+        if condition_id is not None:
+            params["market"] = condition_id
+
+        data = await self._get("/positions", params=params)
+
+        if not isinstance(data, list):
+            logger.warning("get_wallet_positions: unexpected non-list response from /positions")
+            return []
+
+        return [WalletPosition.model_validate(p) for p in data]
+
+    async def get_wallet_activity(
+        self,
+        wallet: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[WalletActivity]:
+        """Fetch a wallet's activity feed (trades, redeems, etc.).
+
+        Args:
+            wallet: The proxy-wallet address to fetch activity for.
+            limit: Maximum number of activity records to return.
+            offset: Number of records to skip, for pagination.
+
+        Returns:
+            List of WalletActivity objects, or an empty list if the
+            response was not a JSON list.
+        """
+        params: dict[str, Any] = {"user": wallet, "limit": limit, "offset": offset}
+
+        data = await self._get("/activity", params=params)
+
+        if not isinstance(data, list):
+            logger.warning("get_wallet_activity: unexpected non-list response from /activity")
+            return []
+
+        return [WalletActivity.model_validate(a) for a in data]
