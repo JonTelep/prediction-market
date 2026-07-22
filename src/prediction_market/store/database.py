@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS trades (
     volume_usd REAL DEFAULT 0,
     outcome TEXT DEFAULT '',
     owner TEXT DEFAULT '',
+    proxy_wallet TEXT NOT NULL DEFAULT '',
     match_time TEXT DEFAULT '',
     transaction_hash TEXT DEFAULT '',
     inserted_at TEXT DEFAULT (datetime('now'))
@@ -133,6 +134,33 @@ CREATE INDEX IF NOT EXISTS idx_reports_agent ON anomaly_reports(agent, created_a
 """
 
 
+async def _ensure_columns(db: aiosqlite.Connection) -> None:
+    """Add columns to existing tables that predate a schema change.
+
+    `CREATE TABLE IF NOT EXISTS` silently skips changed column definitions
+    on databases that already exist, and there is no migration framework
+    in this project. This helper is intentionally single-purpose: it only
+    backfills `trades.proxy_wallet` (and its index). Do not generalize it
+    into a general migration system.
+
+    The index on `proxy_wallet` is created here, after the column is
+    guaranteed to exist, rather than in `SCHEMA_SQL`'s `executescript`
+    block -- `executescript` runs unconditionally before this function on
+    every call to `init_database`, so an `idx_trades_wallet` statement
+    living in `SCHEMA_SQL` would raise "no such column: proxy_wallet"
+    against a legacy `trades` table that predates the column.
+    """
+    cursor = await db.execute("PRAGMA table_info(trades)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "proxy_wallet" not in columns:
+        await db.execute("ALTER TABLE trades ADD COLUMN proxy_wallet TEXT NOT NULL DEFAULT ''")
+        await db.commit()
+        logger.info("Added proxy_wallet column to trades table")
+
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trades_wallet ON trades(proxy_wallet)")
+    await db.commit()
+
+
 async def init_database(config: AppConfig) -> aiosqlite.Connection:
     """Initialize the database with WAL mode and full schema."""
     db_path = Path(config.database.path)
@@ -148,6 +176,9 @@ async def init_database(config: AppConfig) -> aiosqlite.Connection:
     # Create all tables
     await db.executescript(SCHEMA_SQL)
     await db.commit()
+
+    # Backfill columns added after the table was first created on disk.
+    await _ensure_columns(db)
 
     logger.info("Database initialized at %s", db_path)
     return db

@@ -10,6 +10,7 @@ build/
 venv/
 .env
 /data/
+data/cases/
 *.db
 *.db-wal
 *.db-shm

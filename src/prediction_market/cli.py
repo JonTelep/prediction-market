@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -260,6 +261,170 @@ def markets(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# wallets
+# ---------------------------------------------------------------------------
+
+
+def _abbreviate_wallet(wallet: str) -> str:
+    """Abbreviate a wallet address as ``0x1234...abcd`` for compact display."""
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:6]}...{wallet[-4:]}"
+
+
+@main.command("wallets")
+@click.argument("market_id")
+@click.option(
+    "--hours",
+    type=int,
+    default=168,
+    show_default=True,
+    help="Size of the trailing trading window to profile, in hours.",
+)
+@click.pass_context
+def wallets_cmd(ctx: click.Context, market_id: str, hours: int) -> None:
+    """Rank a market's wallets by Phase-2 anomaly-profiler score.
+
+    Reads wallet-attributed trades from the local database (no live API
+    calls), summarizes them with ``get_market_wallet_summary``, and scores
+    each wallet with ``profile_wallets``. Trades ingested before Phase 2
+    have no ``proxy_wallet`` and are therefore excluded from this view.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from datetime import datetime, timedelta, timezone
+
+    from prediction_market.analysis.wallet_profiler import profile_wallets
+    from prediction_market.store.database import get_database
+    from prediction_market.store.queries import get_market_wallet_summary
+
+    now = datetime.now(timezone.utc)
+    end = now.strftime("%Y-%m-%d %H:%M:%S")
+    start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def _query() -> list[dict[str, Any]]:
+        db = await get_database(config)
+        try:
+            return await get_market_wallet_summary(db, market_id, start, end)
+        finally:
+            await db.close()
+
+    summaries = _run_async(_query())
+
+    if not summaries:
+        click.echo(
+            f"No wallet-attributed trades for market {market_id!r} in the last "
+            f"{hours}h. Trades ingested before Phase 2 lack wallet attribution."
+        )
+        return
+
+    features = profile_wallets(summaries, window_end=end, thresholds=config.thresholds)
+
+    if not features:
+        click.echo(
+            f"No wallets met the minimum-volume threshold for market {market_id!r} "
+            f"in the last {hours}h."
+        )
+        return
+
+    click.echo(
+        f"\n{'Wallet':<20} {'Trades':>7} {'Volume USD':>14} {'Share':>7} "
+        f"{'Concentration':>13} {'Fresh':>6} {'Score':>7}"
+    )
+    click.echo("-" * 90)
+
+    for f in features:
+        addr = _abbreviate_wallet(f.wallet)
+        vol = f"${f.total_volume_usd:,.0f}"
+        share = f"{f.volume_share:.1%}"
+        conc = f"{f.directional_concentration:.2f}"
+        fresh = "yes" if f.is_fresh else "no"
+        score = f"{f.score:.3f}"
+        click.echo(
+            f"{addr:<20} {f.trade_count:>7} {vol:>14} {share:>7} "
+            f"{conc:>13} {fresh:>6} {score:>7}"
+        )
+
+    click.echo(f"\nTotal: {len(features)} wallet(s) scored")
+
+
+# ---------------------------------------------------------------------------
+# wallet
+# ---------------------------------------------------------------------------
+
+
+@main.command("wallet")
+@click.argument("address")
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Maximum number of trades to display.",
+)
+@click.pass_context
+def wallet_cmd(ctx: click.Context, address: str, limit: int) -> None:
+    """Show one wallet's cross-market trade history from the local DB.
+
+    This is a local-DB view only (``get_wallet_trades``): it never calls
+    the live Data API. For an address's *current* on-chain positions or
+    activity, use the Data API's ``get_wallet_positions``/
+    ``get_wallet_activity`` helpers directly -- those are reserved for the
+    live validation session and Phase 3 investigations, not this command.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.store.database import get_database
+    from prediction_market.store.queries import get_wallet_trades
+
+    async def _query() -> list[dict[str, Any]]:
+        db = await get_database(config)
+        try:
+            return await get_wallet_trades(db, address, limit=limit)
+        finally:
+            await db.close()
+
+    rows = _run_async(_query())
+
+    if not rows:
+        click.echo(f"No trades found for wallet {address!r} in the local database.")
+        return
+
+    click.echo(
+        f"\n{'Match Time':<20} {'Market':<24} {'Side':<5} {'Outcome':<8} "
+        f"{'Price':>7} {'Volume USD':>12}"
+    )
+    click.echo("-" * 90)
+
+    total_volume = 0.0
+    buy_volume = 0.0
+    sell_volume = 0.0
+
+    for r in rows:
+        ts = str(r["match_time"])[:19]
+        market = str(r["market_id"])[:22]
+        side = str(r["side"])
+        outcome = str(r["outcome"])[:8]
+        price = f"{float(r['price']):.4f}" if r["price"] is not None else "N/A"
+        vol = float(r["volume_usd"] or 0.0)
+        total_volume += vol
+        if side.upper() == "BUY":
+            buy_volume += vol
+        elif side.upper() == "SELL":
+            sell_volume += vol
+        click.echo(
+            f"{ts:<20} {market:<24} {side:<5} {outcome:<8} {price:>7} ${vol:>10,.2f}"
+        )
+
+    click.echo(
+        f"\nTotal: {len(rows)} trade(s), volume ${total_volume:,.2f} "
+        f"(buy ${buy_volume:,.2f} / sell ${sell_volume:,.2f})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # reports
 # ---------------------------------------------------------------------------
 
@@ -474,3 +639,237 @@ def report_detail(ctx: click.Context, report_id: int, as_json: bool) -> None:
         )
 
         click.echo(format_report(report))
+
+
+# ---------------------------------------------------------------------------
+# archive-case
+# ---------------------------------------------------------------------------
+
+
+@main.command("archive-case")
+@click.argument("slug")
+@click.option(
+    "--output",
+    "output_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("data/cases"),
+    show_default=True,
+    help="Parent directory under which the case directory is written.",
+)
+@click.option(
+    "--max-trade-pages",
+    type=int,
+    default=200,
+    show_default=True,
+    help="Safety cap on Data API trade pages fetched (100 trades/page).",
+)
+@click.pass_context
+def archive_case_cmd(
+    ctx: click.Context, slug: str, output_dir: Path, max_trade_pages: int
+) -> None:
+    """Freeze a live Polymarket market into the on-disk backtest case format.
+
+    Fetches the market's Gamma metadata, YES-token CLOB price history, and
+    full Data-API trade tape, derives the replay spine, and writes a case
+    directory that ``load_case``/``replay_case`` accept.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.archiver import archive_case, summarize_case
+    from prediction_market.backtest.case_format import load_case
+
+    click.echo(f"Archiving case for slug {slug!r}...", err=True)
+    case_dir = _run_async(
+        archive_case(config, slug, output_dir, max_trade_pages=max_trade_pages)
+    )
+
+    case = load_case(case_dir)
+    summary = summarize_case(case)
+
+    click.echo(f"Wrote case to {case_dir}")
+    click.echo(
+        f"snapshots={summary['snapshots']} trades={summary['trades']} "
+        f"events={summary['events']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# cases
+# ---------------------------------------------------------------------------
+
+
+@main.command("cases")
+@click.option(
+    "--dir",
+    "cases_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("data/cases"),
+    show_default=True,
+    help="Directory containing archived case subdirectories.",
+)
+@click.pass_context
+def cases_cmd(ctx: click.Context, cases_dir: Path) -> None:
+    """List archived backtest cases.
+
+    Reads each subdirectory of ``--dir`` as a case via ``load_case`` and
+    prints its slug, question, snapshot/trade counts, and label status.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.case_format import load_case
+
+    cases_dir = Path(cases_dir)
+    if not cases_dir.exists():
+        click.echo(f"No cases directory at {cases_dir}.")
+        return
+
+    rows = []
+    for entry in sorted(cases_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            case = load_case(entry)
+        except ValueError as e:
+            click.echo(f"Skipping {entry.name}: {e}", err=True)
+            continue
+        rows.append(case)
+
+    if not rows:
+        click.echo(f"No archived cases found in {cases_dir}.")
+        return
+
+    click.echo(f"\n{'Slug':<30} {'Snap':>6} {'Trades':>7} {'Labeled':>8}  Question")
+    click.echo("-" * 110)
+    for case in rows:
+        slug = case.slug[:28]
+        labeled = "yes" if case.label is not None else "no"
+        q = case.question[:50]
+        click.echo(
+            f"{slug:<30} {len(case.snapshots):>6} {len(case.trades):>7} "
+            f"{labeled:>8}  {q}"
+        )
+
+    click.echo(f"\nTotal: {len(rows)} archived case(s)")
+
+
+# ---------------------------------------------------------------------------
+# backtest
+# ---------------------------------------------------------------------------
+
+
+@main.command("backtest")
+@click.option(
+    "--case",
+    "case_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+    help="Path to an archived case directory (see 'archive-case'/'cases').",
+)
+@click.option(
+    "--null-runs",
+    "null_runs",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Replay this many synthetic null controls and report the "
+    "detector's false-positive path rate.",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="Base seed for synthetic null-control generation.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit the evaluation (and null-control results) as JSON.",
+)
+@click.pass_context
+def backtest_cmd(
+    ctx: click.Context,
+    case_dir: Path,
+    null_runs: int,
+    seed: int,
+    as_json: bool,
+) -> None:
+    """Replay a case and score the detector's output against its label.
+
+    Replays ``--case`` through the real point-in-time detector, then
+    reports whether the labeled anomaly window was detected, the lead
+    time relative to the label's ``event_time``, and every emitted
+    report. With ``--null-runs N``, also replays N synthetic
+    volatility-matched null markets and reports how often the detector
+    fired on them anyway -- the false-positive control.
+    """
+    config = _load(ctx.obj["config_path"])
+    _setup_logging(config.log_level)
+
+    from prediction_market.backtest.case_format import load_case
+    from prediction_market.backtest.metrics import evaluate_replay
+    from prediction_market.backtest.replay import replay_case
+    from prediction_market.backtest.synthetic import estimate_false_positive_rate
+
+    case = load_case(case_dir)
+
+    with tempfile.TemporaryDirectory(prefix="prediction-market-backtest-") as tmpdir:
+        run_config = config.model_copy(deep=True)
+        run_config.database.path = str(Path(tmpdir) / "replay.db")
+
+        result = _run_async(replay_case(case, run_config))
+        evaluation = evaluate_replay(result, case)
+
+        fp_result: dict[str, Any] | None = None
+        if null_runs > 0:
+            fp_result = _run_async(
+                estimate_false_positive_rate(
+                    case, run_config, runs=null_runs, base_seed=seed
+                )
+            )
+
+    if as_json:
+        payload = evaluation.to_dict()
+        if fp_result is not None:
+            payload["null_control"] = fp_result
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"Case: {case.slug}")
+    click.echo(f"Question: {case.question}")
+    if case.label is not None:
+        click.echo(
+            f"Labeled window: {case.label.window_start} .. {case.label.window_end} "
+            f"(event_time={case.label.event_time})"
+        )
+    else:
+        click.echo("Labeled window: none (unlabeled case)")
+
+    click.echo(f"Detected: {evaluation.detected}")
+    lead = evaluation.lead_time_minutes
+    lead_str = f"{lead:.1f} min" if lead is not None else "n/a"
+    click.echo(f"Lead time: {lead_str}")
+    click.echo(f"First hit: {evaluation.first_hit_time or 'n/a'}")
+    click.echo(
+        f"Hits: {evaluation.hits}  False alarms: {evaluation.false_alarms}  "
+        f"Total reports: {evaluation.total_reports}"
+    )
+
+    if result.reports:
+        click.echo("\nReports:")
+        for r in result.reports:
+            ts = r.details.get("snapshot_timestamp", "?")
+            click.echo(f"  {ts}  {r.severity:<8}  {r.summary}")
+
+    if fp_result is not None:
+        click.echo("\nNull control:")
+        click.echo(
+            f"  runs={fp_result['runs']} "
+            f"paths_with_reports={fp_result['paths_with_reports']} "
+            f"reports_per_path_mean={fp_result['reports_per_path_mean']:.3f} "
+            f"fp_path_rate={fp_result['fp_path_rate']:.3f}"
+        )

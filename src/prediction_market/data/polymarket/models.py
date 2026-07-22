@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 class MarketOutcome(str, Enum):
@@ -221,24 +221,81 @@ class ClobPriceHistory(BaseModel):
 
 
 class Trade(BaseModel):
-    """Individual trade from Data API."""
+    """Individual trade from Data API.
+
+    Live-API note (verified 2026-07-20 during the Phase-2 validation
+    session): the real ``/trades`` records differ from this repo's
+    original fixture assumptions -- the market is keyed ``conditionId``
+    (not ``market``), the token is ``asset`` (not ``assetId``), the trade
+    time is an epoch number under ``timestamp`` (not ``matchTime``), and
+    there is **no** ``id`` field. The alias choices below accept both
+    shapes, and a validator synthesizes a deterministic ``id`` from the
+    trade's identifying fields when the API provides none (the trades
+    table uses ``id`` as its primary key for INSERT OR IGNORE dedup).
+    """
 
     id: str = ""
     taker_order_id: str = Field("", alias="takerOrderId")
-    market: str = ""
-    asset_id: str = Field("", alias="assetId")
+    market: str = Field(
+        "",
+        validation_alias=AliasChoices("market", "conditionId"),
+        serialization_alias="market",
+    )
+    asset_id: str = Field(
+        "",
+        validation_alias=AliasChoices("assetId", "asset"),
+        serialization_alias="assetId",
+    )
     side: str = ""
     size: str = ""
     fee_rate_bps: str = Field("", alias="feeRateBps")
     price: str = ""
     status: str = ""
-    match_time: str = Field("", alias="matchTime")
+    match_time: str = Field(
+        "",
+        validation_alias=AliasChoices("matchTime", "timestamp"),
+        serialization_alias="matchTime",
+    )
     outcome: str = ""
     bucket_index: str = Field("", alias="bucketIndex")
     owner: str = ""
+    proxy_wallet: str = Field("", alias="proxyWallet")
     transaction_hash: str = Field("", alias="transactionHash")
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _synthesize_id(self) -> "Trade":
+        if not self.id and self.transaction_hash:
+            self.id = (
+                f"{self.transaction_hash}-{self.asset_id[:16]}-{self.match_time}"
+                f"-{self.side}-{self.size}-{self.price}"
+            )
+        return self
+
+    @field_validator(
+        "size", "price", "fee_rate_bps", "bucket_index", "match_time", mode="before"
+    )
+    @classmethod
+    def _coerce_numeric_to_str(cls, v: Any) -> Any:
+        """Accept JSON numbers for the string-typed fields.
+
+        Live-API finding (2026-07-20 validation session): the Data API
+        serves ``size``/``price`` as JSON numbers, not the strings this
+        repo's fixtures assumed. ``match_time`` can likewise arrive as an
+        epoch number; the store's write-time normalization already handles
+        the all-digits string form.
+        """
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, float):
+            # str() is lossless (repr round-trips); integral floats drop
+            # the trailing ".0" so epoch timestamps stay all-digits for
+            # the store's normalization.
+            return str(int(v)) if v.is_integer() else str(v)
+        if isinstance(v, int):
+            return str(v)
+        return v
 
     @property
     def price_float(self) -> float:
@@ -256,6 +313,13 @@ class Trade(BaseModel):
     def match_datetime(self) -> datetime | None:
         if not self.match_time:
             return None
+        # Live /trades serves epoch-seconds timestamps (all-digits after
+        # the numeric coercion above); fixtures use ISO-8601.
+        if self.match_time.isdigit():
+            try:
+                return datetime.fromtimestamp(int(self.match_time), tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return None
         try:
             return datetime.fromisoformat(self.match_time.replace("Z", "+00:00"))
         except ValueError:
@@ -280,3 +344,54 @@ class OpenInterest(BaseModel):
     open_interest: float = Field(0.0, alias="openInterest")
 
     model_config = {"populate_by_name": True}
+
+
+class WalletPosition(BaseModel):
+    """A wallet's open position in a market, from Data API /positions."""
+
+    proxy_wallet: str = Field("", alias="proxyWallet")
+    asset: str = Field("", alias="asset")
+    condition_id: str = Field("", alias="conditionId")
+    size: str = ""
+    avg_price: str = Field("", alias="avgPrice")
+    initial_value: str = Field("", alias="initialValue")
+    current_value: str = Field("", alias="currentValue")
+    cash_pnl: str = Field("", alias="cashPnl")
+    percent_pnl: str = Field("", alias="percentPnl")
+    outcome: str = ""
+    title: str = ""
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def size_float(self) -> float:
+        return float(self.size) if self.size else 0.0
+
+    @property
+    def avg_price_float(self) -> float:
+        return float(self.avg_price) if self.avg_price else 0.0
+
+    @property
+    def cash_pnl_float(self) -> float:
+        return float(self.cash_pnl) if self.cash_pnl else 0.0
+
+
+class WalletActivity(BaseModel):
+    """A single activity event for a wallet, from Data API /activity."""
+
+    proxy_wallet: str = Field("", alias="proxyWallet")
+    timestamp: str = ""
+    type: str = ""
+    condition_id: str = Field("", alias="conditionId")
+    size: str = ""
+    usdc_size: str = Field("", alias="usdcSize")
+    price: str = ""
+    side: str = ""
+    outcome: str = ""
+    transaction_hash: str = Field("", alias="transactionHash")
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def usdc_size_float(self) -> float:
+        return float(self.usdc_size) if self.usdc_size else 0.0

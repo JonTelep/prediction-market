@@ -1,0 +1,11 @@
+[
+  {
+    "source": "congress",
+    "event_type": "hearing",
+    "title": "Senate Confirmation Hearing",
+    "description": "Scheduled confirmation hearing for the nominee.",
+    "event_date": "2026-06-02 01:00:00",
+    "url": "https://example.gov/hearing/minimal-1",
+    "keywords": ["nominee", "confirmation", "senate"]
+  }
+]

@@ -13,6 +13,7 @@
     "outcome": "Yes",
     "bucketIndex": "0",
     "owner": "0xowner1",
+    "proxyWallet": "0xwallet1",
     "transactionHash": "0xtx1"
   },
   {
@@ -29,6 +30,7 @@
     "outcome": "Yes",
     "bucketIndex": "0",
     "owner": "0xowner2",
+    "proxyWallet": "0xwallet2",
     "transactionHash": "0xtx2"
   },
   {
@@ -45,6 +47,7 @@
     "outcome": "Yes",
     "bucketIndex": "0",
     "owner": "0xowner1",
+    "proxyWallet": "0xwallet3",
     "transactionHash": "0xtx3"
   },
   {
@@ -61,6 +64,7 @@
     "outcome": "Yes",
     "bucketIndex": "0",
     "owner": "0xowner3",
+    "proxyWallet": "0xwallet4",
     "transactionHash": "0xtx4"
   }
 ]

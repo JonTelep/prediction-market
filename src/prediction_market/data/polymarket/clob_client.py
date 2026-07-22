@@ -115,8 +115,12 @@ class ClobClient:
         Returns:
             ClobPriceHistory containing timestamped price points.
         """
+        # Live-API finding (2026-07-20): /prices-history requires the token
+        # under the `market` param -- `token_id` gets a 400 with "the
+        # 'market' (asset id) is mandatory". (The other CLOB endpoints
+        # above genuinely use `token_id`.)
         params: dict[str, Any] = {
-            "token_id": token_id,
+            "market": token_id,
             "interval": interval,
             "fidelity": fidelity,
         }

@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from prediction_market.analysis.timeseries import EWMA, RollingStats, compute_z_score
+from prediction_market.analysis.timeseries import (
+    EWMA,
+    RollingStats,
+    clamp_probability,
+    compute_z_score,
+    logit,
+)
 
 
 class TestComputeZScore:
@@ -108,3 +114,22 @@ class TestEWMA:
         data = ewma.to_dict()
         ewma2 = EWMA.from_dict(data)
         assert ewma2.value == pytest.approx(ewma.value)
+
+
+class TestClampProbability:
+    def test_clamps_low(self):
+        assert clamp_probability(0.0) == pytest.approx(0.005)
+
+    def test_clamps_high(self):
+        assert clamp_probability(1.0) == pytest.approx(0.995)
+
+    def test_passthrough_mid_range(self):
+        assert clamp_probability(0.5) == pytest.approx(0.5)
+
+
+class TestLogit:
+    def test_logit_half_is_zero(self):
+        assert logit(0.5) == pytest.approx(0.0)
+
+    def test_logit_monotonic(self):
+        assert logit(0.9) > logit(0.5) > logit(0.1)

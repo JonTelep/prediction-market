@@ -1,0 +1,50 @@
+[
+  {
+    "proxyWallet": "0xwallet1",
+    "timestamp": "2026-02-20T10:00:00Z",
+    "type": "TRADE",
+    "conditionId": "0xcondition1",
+    "size": "500",
+    "usdcSize": "300",
+    "price": "0.60",
+    "side": "BUY",
+    "outcome": "Yes",
+    "transactionHash": "0xtx1"
+  },
+  {
+    "proxyWallet": "0xwallet1",
+    "timestamp": "2026-02-20T10:05:00Z",
+    "type": "TRADE",
+    "conditionId": "0xcondition2",
+    "size": "1200",
+    "usdcSize": "420",
+    "price": "0.35",
+    "side": "BUY",
+    "outcome": "No",
+    "transactionHash": "0xtx2"
+  },
+  {
+    "proxyWallet": "0xwallet1",
+    "timestamp": "2026-02-25T09:00:00Z",
+    "type": "REDEEM",
+    "conditionId": "0xcondition1",
+    "size": "500",
+    "usdcSize": "500",
+    "price": "1.00",
+    "side": "",
+    "outcome": "Yes",
+    "transactionHash": "0xtx3"
+  },
+  {
+    "proxyWallet": "0xwallet1",
+    "timestamp": "2026-02-26T09:00:00Z",
+    "type": "TRADE",
+    "conditionId": "0xcondition3",
+    "size": "80",
+    "usdcSize": "72",
+    "price": "0.90",
+    "side": "SELL",
+    "outcome": "Yes",
+    "transactionHash": "0xtx4"
+  }
+]

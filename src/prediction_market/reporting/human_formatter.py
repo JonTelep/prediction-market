@@ -52,6 +52,38 @@ def _format_dict_section(title: str, data: dict, depth: int = 0) -> str:
     return "\n".join(lines)
 
 
+def _abbreviate_wallet(wallet: str) -> str:
+    """Abbreviate a wallet address as ``0x1234...abcd`` for compact display."""
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:6]}...{wallet[-4:]}"
+
+
+def _format_wallet_evidence_section(wallet_evidence: list[dict], cusum: dict | None) -> str:
+    """Render the wallet-evidence section: one line per wallet, plus CUSUM."""
+    if not wallet_evidence:
+        return ""
+    lines = ["### Wallet Evidence", ""]
+    for w in wallet_evidence:
+        addr = _abbreviate_wallet(str(w.get("wallet", "")))
+        share = w.get("volume_share", 0.0)
+        concentration = w.get("directional_concentration", 0.0)
+        fresh = "fresh" if w.get("is_fresh") else "not fresh"
+        score = w.get("score", 0.0)
+        lines.append(
+            f"- **{addr}** -- share: {share:.1%}, concentration: {concentration:.2f}, "
+            f"{fresh}, score: {score:.3f}"
+        )
+    if cusum:
+        direction = cusum.get("direction", "?")
+        statistic = cusum.get("statistic", 0.0)
+        lines.append(
+            f"- **Change-point:** {direction} shift detected, CUSUM statistic {statistic:.3f}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _format_calendar_section(matches: list[dict]) -> str:
     """Render calendar matches as a Markdown table."""
     if not matches:
@@ -118,6 +150,13 @@ def format_report(report: AnomalyReport) -> str:
     volume_section = _format_dict_section("Volume Evidence", report.volume_evidence)
     if volume_section:
         sections.append(volume_section)
+
+    wallet_evidence = report.details.get("wallet_evidence") if report.details else None
+    cusum = report.details.get("cusum") if report.details else None
+    if wallet_evidence:
+        wallet_section = _format_wallet_evidence_section(wallet_evidence, cusum)
+        if wallet_section:
+            sections.append(wallet_section)
 
     calendar_section = _format_calendar_section(report.calendar_matches)
     if calendar_section:
