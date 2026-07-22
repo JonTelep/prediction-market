@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -391,7 +391,7 @@ class Calibrator:
         for i in range(self._n_eval_runs):
             cfg = ABMConfig(
                 **{k: v for k, v in config.__dict__.items() if k != "seed"},
-                seed=(config.seed or 42) + i,
+                seed=(42 if config.seed is None else config.seed) + i,
             )
             results.append(simulator.run(cfg))
 
@@ -417,13 +417,12 @@ class Calibrator:
             return_autocorrelation=float(np.mean(autocorrs)),
         )
 
-    @staticmethod
     def _params_to_config(
-        params: np.ndarray, initial_price: float, seed: int
+        self, params: np.ndarray, initial_price: float, seed: int
     ) -> ABMConfig:
         """Convert optimization parameters to ABMConfig."""
         return ABMConfig(
-            n_ticks=500,
+            n_ticks=self._n_ticks,
             initial_price=initial_price,
             base_liquidity=float(np.clip(params[2], 500, 100_000)),
             n_noise=20,

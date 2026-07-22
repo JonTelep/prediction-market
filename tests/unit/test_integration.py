@@ -7,7 +7,6 @@ generate_report.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from prediction_market.simulation.integration import (
     SimulationEnhancedDetector,

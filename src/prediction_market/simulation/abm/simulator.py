@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -28,7 +28,7 @@ from prediction_market.simulation.abm.agents import (
     NoiseTrader,
     TraderAgent,
 )
-from prediction_market.simulation.abm.market import SimulatedMarket, MarketState
+from prediction_market.simulation.abm.market import SimulatedMarket
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +288,7 @@ class ABMSimulator:
             List of ABMResult instances.
         """
         results = []
-        base_seed = self._config.seed or 42
+        base_seed = 42 if self._config.seed is None else self._config.seed
         for i in range(n_runs):
             cfg = ABMConfig(
                 **{

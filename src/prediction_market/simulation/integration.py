@@ -12,7 +12,6 @@ Also provides standalone analysis functions for the CLI.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,25 +20,21 @@ from typing import Any
 
 import numpy as np
 
-from prediction_market.simulation.distributions import BetaMarketModel
 from prediction_market.simulation.monte_carlo import MonteCarloEngine, SimulationResult
 from prediction_market.simulation.importance_sampler import ImportanceSampler, TailRiskEstimate
 from prediction_market.simulation.particle_filter import (
-    MarketAwareTransition,
     MarketContext,
     ParticleFilter,
     ParticleFilterResult,
     TradeFlowAnalyzer,
 )
 from prediction_market.simulation.copulas import (
-    CopulaFitter,
     DynamicCopulaTracker,
     TailAlert,
     TailDependence,
 )
 from prediction_market.simulation.abm import (
     ABMConfig,
-    ABMResult,
     ABMSimulator,
     Calibrator,
     CalibrationResult,
@@ -118,6 +113,7 @@ class SimulationEnhancedDetector:
         n_particles: int = 2_000,
         min_history: int = 30,
         seed: int = 42,
+        trade_flow_lookback_minutes: int = 30,
     ) -> None:
         self._mc_n = mc_simulations
         self._is_n = is_samples
@@ -129,7 +125,9 @@ class SimulationEnhancedDetector:
         self._copula_tracker = DynamicCopulaTracker(
             window_size=50, step_size=10, alert_z_threshold=2.5
         )
-        self._trade_flow = TradeFlowAnalyzer(lookback_minutes=30)
+        self._trade_flow = TradeFlowAnalyzer(
+            lookback_minutes=trade_flow_lookback_minutes
+        )
 
     def process_tick(
         self,
@@ -467,6 +465,7 @@ def analyze_market(
     mc_simulations: int = 10_000,
     n_particles: int = 2_000,
     seed: int = 42,
+    trade_flow_lookback_minutes: int = 30,
 ) -> dict[str, Any]:
     """Run full simulation analysis on a market's historical data.
 
@@ -482,6 +481,8 @@ def analyze_market(
         mc_simulations: Number of MC simulations.
         n_particles: Particle filter particles.
         seed: Random seed.
+        trade_flow_lookback_minutes: Trade-flow window; should cover the
+            span of the supplied ``trades`` or most are silently ignored.
 
     Returns:
         Dict with full analysis results.
@@ -494,6 +495,7 @@ def analyze_market(
         mc_simulations=mc_simulations,
         n_particles=n_particles,
         seed=seed,
+        trade_flow_lookback_minutes=trade_flow_lookback_minutes,
     )
 
     # Feed all prices through the detector

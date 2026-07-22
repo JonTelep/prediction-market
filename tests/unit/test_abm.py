@@ -7,7 +7,6 @@ and calibrator.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from prediction_market.simulation.abm.agents import (
     InformedTrader,

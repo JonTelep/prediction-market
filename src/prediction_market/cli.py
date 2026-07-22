@@ -691,24 +691,36 @@ def simulate(
                 click.echo(f"No snapshots found for market {market_id}", err=True)
                 raise SystemExit(1)
 
-            prices = np.array([s["price_yes"] for s in snapshots if s.get("price_yes")])
-            volumes = np.array([s.get("volume_24hr", 0) or 0 for s in snapshots])
+            priced = [s for s in snapshots if s.get("price_yes")]
+            prices = np.array([s["price_yes"] for s in priced])
+            volumes = np.array([s.get("volume_24hr", 0) or 0 for s in priced])
 
             if len(prices) < 5:
                 click.echo(f"Only {len(prices)} price observations — need at least 5", err=True)
                 raise SystemExit(1)
 
-            # Fetch orderbook data
-            orderbook_rows = await q.get_recent_orderbooks(db, market_id, "", hours=hours)
+            # Get market question and token ids
+            market_row = await q._fetch_one_dict(
+                db,
+                "SELECT question, clob_token_ids FROM markets WHERE id = ?",
+                (market_id,),
+            )
+            market_question = market_row["question"] if market_row else market_id
+
+            # Fetch orderbook data for the YES token (first CLOB token id)
+            token_ids = (
+                json.loads(market_row["clob_token_ids"])
+                if market_row and market_row.get("clob_token_ids")
+                else []
+            )
+            orderbook_rows = (
+                await q.get_recent_orderbooks(db, market_id, token_ids[0], hours=hours)
+                if token_ids
+                else []
+            )
 
             # Fetch trades
             trades = await q.get_market_trades(db, market_id, hours=hours)
-
-            # Get market question for display
-            market_row = await q._fetch_one_dict(
-                db, "SELECT question FROM markets WHERE id = ?", (market_id,)
-            )
-            market_question = market_row["question"] if market_row else market_id
 
             result = analyze_market(
                 prices=prices,
@@ -719,6 +731,7 @@ def simulate(
                 mc_simulations=mc_sims,
                 n_particles=particles,
                 seed=seed,
+                trade_flow_lookback_minutes=hours * 60,
             )
             result["market_question"] = market_question
             return result
@@ -758,8 +771,6 @@ def dashboard(ctx: click.Context, hours: int, top: int, as_json: bool) -> None:
     config = _load(ctx.obj["config_path"])
     _setup_logging("WARNING")
 
-    import numpy as np
-
     async def _run_dashboard() -> list[dict[str, Any]]:
         from prediction_market.store.database import get_database
         from prediction_market.store import queries as q
@@ -798,8 +809,9 @@ def dashboard(ctx: click.Context, hours: int, top: int, as_json: bool) -> None:
                 if not snapshots or len(snapshots) < 5:
                     continue
 
-                prices = [s["price_yes"] for s in snapshots if s.get("price_yes")]
-                volumes = [s.get("volume_24hr", 0) or 0 for s in snapshots]
+                priced = [s for s in snapshots if s.get("price_yes")]
+                prices = [s["price_yes"] for s in priced]
+                volumes = [s.get("volume_24hr", 0) or 0 for s in priced]
 
                 if len(prices) < 5:
                     continue
@@ -871,7 +883,7 @@ def dashboard(ctx: click.Context, hours: int, top: int, as_json: bool) -> None:
             f"{r['regime']:>7}  {r['question']}"
         )
 
-    click.echo(f"\n   Run 'prediction-market simulate <market-id>' for full analysis")
+    click.echo("\n   Run 'prediction-market simulate <market-id>' for full analysis")
 
 
 # ---------------------------------------------------------------------------
